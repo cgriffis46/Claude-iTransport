@@ -5,5 +5,6 @@ by having the child classes implement the necessary I2C/SPI functions. Im trying
 using similar transports.
 
 
-
+donations:
+BTC: 3NHkEBTHdWWbvDBu8AXpmV8TFhnJPrqzBe
 

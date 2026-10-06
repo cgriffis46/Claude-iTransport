@@ -1,0 +1,4 @@
+Delete these two files from the project; FreeRtosTransport.h replaces them:
+
+  itransport/hw/freertos/inc/FreeRtosI2CTransport.h
+  itransport/hw/freertos/src/FreeRtosI2CTransport.cpp

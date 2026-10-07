@@ -137,6 +137,16 @@ void xNetInterface::interruptFromIsr() {
     portYIELD_FROM_ISR(woken);
 }
 
+// As interruptFromIsr(), without telling the device anything: it
+// asked for this itself.
+void xNetInterface::wakeFromIsr() {
+    if (inbox_ == nullptr || kickPending_.exchange(true)) return;
+    Msg m;
+    BaseType_t woken = pdFALSE;
+    (void)xQueueSendFromISR(inbox_, &m, &woken);
+    portYIELD_FROM_ISR(woken);
+}
+
 bool xNetInterface::ready() const {
     return events_ != nullptr && (xEventGroupGetBits(events_) & kIfReady) != 0;
 }

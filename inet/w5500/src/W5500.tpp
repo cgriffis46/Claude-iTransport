@@ -159,6 +159,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		const bool started = _xWrite ? this->beginWrite(hdr, 3, _xBuf, _xLen)
 		                             : this->beginRead(hdr, 3, _xBuf, _xLen);
 		if (started) {
+			_stTransfers.fetch_add(1, std::memory_order_relaxed);
 			enter(St::xfer_wait, nowMs);
 			return 0;
 		}
@@ -248,6 +249,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		return xfer(false, w5500_bsb_common(), w5500_PHYCFGR, &_phy, 1, St::init_done, nowMs);
 	case St::init_done:
 		_ready = true;
+		_stInits.fetch_add(1, std::memory_order_relaxed);
 		_lastSir = _lastPhy = nowMs;
 		emitDev(DeviceEvent::Ready);
 		if (!_dhcpOn && _host) _host->addressChanged(_net);
@@ -370,6 +372,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 	}
 	case St::rx_deliver:
 		if (_host) _host->rxDeliver(_cur, _chunk, _moved);
+		_stRx.fetch_add(_moved, std::memory_order_relaxed);
 		_ptr = static_cast<uint16_t>(_ptr + _moved);
 		putBe16(_w, _ptr);
 		return xfer(true, w5500_bsb_sock_reg(_cur), w5500_Sn_RX_RD, _w, 2, St::rx_recv, nowMs);
@@ -416,6 +419,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		return xfer(true, w5500_bsb_sock_reg(_cur), w5500_Sn_TX_WR, _w, 2, St::tx_send, nowMs);
 	}
 	case St::tx_wrote:
+		if (_cur != w5500_dhcp_socket || !_dhcpOn) _stTx.fetch_add(_moved, std::memory_order_relaxed);
 		_ptr = static_cast<uint16_t>(_ptr + _moved);
 		_fsr = static_cast<uint16_t>(_fsr - _moved);
 		_txWrote = static_cast<uint16_t>(_txWrote + _moved);
@@ -756,6 +760,7 @@ uint32_t w5500<TTransport>::evaluate(uint8_t s, uint8_t ir, uint8_t sr, uint32_t
 // starts again from reset after a pause.
 template <typename TTransport>
 uint32_t w5500<TTransport>::fail(uint32_t nowMs) {
+	_stFailures.fetch_add(1, std::memory_order_relaxed);
 	dropAll(SocketEvent::Failed, false);
 	_ready = false;
 	_dhcp.stop();

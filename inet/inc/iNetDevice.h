@@ -44,10 +44,16 @@ enum class DeviceEvent : uint8_t {
     JoinFailed, // Wi-Fi: join() didn't succeed
 };
 
-// Implemented by the interface; called by the device driver.
+// Implemented by the interface; called by the device driver, on the
+// driver thread — except wakeFromIsr().
 class iNetDeviceHost {
 public:
     virtual ~iNetDeviceHost() = default;
+
+    // The one call allowed from interrupt context: get poll() called
+    // soon. For a driver whose bytes arrive in an ISR (a UART module)
+    // and that has decided they are worth looking at.
+    virtual void wakeFromIsr() = 0;
 
     // Room for received bytes on socket s right now. The driver never
     // takes more than this off the chip, and asks again later when it

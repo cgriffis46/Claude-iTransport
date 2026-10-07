@@ -162,7 +162,8 @@ private:
     void handle(const Msg& m);
     static uint32_t nowMs();
 
-    // iNetDeviceHost, all on the driver thread.
+    // iNetDeviceHost, all on the driver thread but wakeFromIsr().
+    void   wakeFromIsr() override;
     size_t rxSpace(uint8_t s) override;
     void   rxDeliver(uint8_t s, const uint8_t* data, size_t len) override;
     size_t txPending(uint8_t s) override;

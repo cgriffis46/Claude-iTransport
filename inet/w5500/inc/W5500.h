@@ -37,6 +37,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <atomic>
 #include <type_traits>
 #include <utility>
 #include "iBlockTransport.h"
@@ -88,6 +89,17 @@ typedef struct w5500_param_t {
 	// don't collide: e.g. HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2().
 	uint32_t dhcpSeed = 0;
 } w5500_param_t;
+
+// Counters, for bring-up and field diagnostics. stats() may be called
+// from any thread.
+typedef struct w5500_stats_t {
+	uint32_t transfers;		// SPI transfers issued
+	uint32_t failures;		// times the driver gave up on the chip and started again
+	uint32_t inits;			// successful start-ups
+	uint32_t interrupts;	// INT pin events relayed by the host
+	uint32_t rxBytes;		// TCP payload, chip -> host
+	uint32_t txBytes;		// TCP payload, host -> chip
+} w5500_stats_t;
 
 enum class w5500_state_t : uint8_t {
 	unconfigured,		// until configure()
@@ -164,7 +176,7 @@ public:
 	bool connect(uint8_t s, const IpAddress &ip, uint16_t port, uint16_t localPort) override;
 	bool listen(uint8_t s, uint16_t port) override;
 	void close(uint8_t s) override;
-	void interrupt() override { _irq = true; }
+	void interrupt() override { _irq = true; _stInterrupts.fetch_add(1, std::memory_order_relaxed); }
 
 	// iEthernetDevice
 	uint16_t speedMbps() const override;
@@ -176,6 +188,17 @@ public:
 	// The address in use (all zeros without one). Driver thread only.
 	const NetConfig &address() const { return _net; }
 	const DhcpClient &dhcp() const { return _dhcp; }
+
+	w5500_stats_t stats() const {
+		w5500_stats_t s;
+		s.transfers = _stTransfers.load(std::memory_order_relaxed);
+		s.failures = _stFailures.load(std::memory_order_relaxed);
+		s.inits = _stInits.load(std::memory_order_relaxed);
+		s.interrupts = _stInterrupts.load(std::memory_order_relaxed);
+		s.rxBytes = _stRx.load(std::memory_order_relaxed);
+		s.txBytes = _stTx.load(std::memory_order_relaxed);
+		return s;
+	}
 
 private:
 	struct Sock {
@@ -297,6 +320,8 @@ private:
 	uint16_t _txWrote = 0;
 	uint8_t  _w[18] = {0};				// register write data
 	uint8_t  _chunk[w5500_chunk_bytes];	// payload to or from the chip's buffers
+
+	std::atomic<uint32_t> _stTransfers{0}, _stFailures{0}, _stInits{0}, _stInterrupts{0}, _stRx{0}, _stTx{0};
 };
 
 } /* namespace W5500 */

@@ -38,6 +38,10 @@ public:
     // reaching the chip; or the bus won't take a transfer at all.
     bool     spiFailNext = false;
     bool     spiRefuse = false;
+    // Wiring faults: every read returns this byte (MISO stuck: 0x00 or
+    // 0xFF), or writes never reach the chip (MOSI open).
+    int      stuckRead = -1;
+    bool     dropWrites = false;
     // A UDP socket sent a datagram (called with no lock held).
     std::function<void(uint8_t s, IpAddress dst, uint16_t port, std::vector<uint8_t> data)> onUdpSend;
 
@@ -56,8 +60,9 @@ public:
             const uint16_t addr = static_cast<uint16_t>((hdr[0] << 8) | hdr[1]);
             const uint8_t bsb = hdr[2] >> 3;
             const uint8_t before = sirLocked();
-            if (write) writeBlock(bsb, addr, data, len);
-            else       readBlock(bsb, addr, data, len);
+            if (write) { if (!dropWrites) writeBlock(bsb, addr, data, len); }
+            else if (stuckRead >= 0) std::memset(data, stuckRead, len);
+            else readBlock(bsb, addr, data, len);
             fire = sirLocked() & ~before;
             out.swap(udpOut_);
         }

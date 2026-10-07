@@ -2,7 +2,8 @@
  * net_app.cpp
  *
  *  W5500 on an STM32L432KC (NUCLEO-L432KC) under FreeRTOS: a TCP echo
- *  server on port 7. Drop this file into a CubeMX/CubeIDE project and
+ *  server on port 7, with its address from DHCP. The smallest version;
+ *  ../stm32l432kc_bringup is a complete firmware with diagnostics. Drop this file into a CubeMX/CubeIDE project and
  *  call net_app_start() from main() after the MX_*_Init() calls and
  *  osKernelInitialize(), before osKernelStart().
  *
@@ -30,7 +31,8 @@
  *  inet/w5500/inc. Sources: itransport/src/{BusTransport,
  *  SpiBlockTransport}.cpp, itransport/hw/stm32/src/{
  *  Stm32HalSpiBlockTransport,Stm32SpiItCallbacks}.cpp,
- *  inet/hw/freertos/src/{xNetInterface,xClient}.cpp.
+ *  inet/hw/freertos/src/{xNetInterface,xClient}.cpp,
+ *  inet/dhcp/src/DhcpClient.cpp; include path inet/dhcp/inc too.
  */
 
 #include "main.h"
@@ -54,7 +56,7 @@ void netThread(void *arg) {
 // arrives; the 10 s timeout just bounds an idle connection.
 void echoThread(void *arg) {
 	xEthernet &eth = *static_cast<xEthernet *>(arg);
-	eth.waitReady(xNetInterface::kForever);
+	eth.waitAddress(xNetInterface::kForever);	// the DHCP lease
 
 	xClient client(eth);
 	uint8_t buf[256];
@@ -84,10 +86,12 @@ extern "C" void net_app_start(void) {
 
 	static W5500::w5500_param_t param = [] {
 		W5500::w5500_param_t p;
-		for (int i = 0; i < 8; ++i) {	// 4 sockets x 4 KB, the rest unused
-			p.rxBufKb[i] = i < 4 ? 4 : 0;
-			p.txBufKb[i] = i < 4 ? 4 : 0;
+		for (int i = 0; i < 8; ++i) {	// 2 KB each for sockets 0-3 and DHCP's socket 7
+			const bool used = i < 4 || i == W5500::w5500_dhcp_socket;
+			p.rxBufKb[i] = used ? 2 : 0;
+			p.txBufKb[i] = used ? 2 : 0;
 		}
+		p.dhcpSeed = HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2();
 		p.pollMs = 100;					// INT is wired: polling is only a backstop
 		return p;
 	}();
@@ -98,10 +102,8 @@ extern "C" void net_app_start(void) {
 	g_eth = &eth;
 
 	NetConfig net;
-	net.mac     = MacAddress(0x02, 0x08, 0xDC, 0x00, 0x00, 0x01);	// locally administered
-	net.ip      = IpAddress(192, 168, 1, 50);
-	net.subnet  = IpAddress(255, 255, 255, 0);
-	net.gateway = IpAddress(192, 168, 1, 1);
+	net.mac  = MacAddress(0x02, 0x08, 0xDC, 0x00, 0x00, 0x01);	// locally administered: make it unique per board
+	net.dhcp = true;	// or false, with ip, subnet and gateway set here
 	eth.begin(net);
 
 	static const osThreadAttr_t netAttr = {

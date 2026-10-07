@@ -16,6 +16,7 @@
 #include "W5500.h"
 #include "SimW5500.h"
 #include "SimDhcpServer.h"
+#include "W5500Probe.h"
 
 using namespace W5500;
 
@@ -46,6 +47,7 @@ struct Host : iNetDeviceHost {
 	void socketEvent(uint8_t s, SocketEvent e) override { events.push_back({s, e}); }
 	void deviceEvent(DeviceEvent e) override { dev.push_back(e); }
 	void addressChanged(const NetConfig &c) override { addrs.push_back(c); }
+	void wakeFromIsr() override {}
 	std::vector<NetConfig> addrs;
 
 	bool overrun = false;
@@ -124,6 +126,7 @@ int main() {
 		check(r.host.hasDev(DeviceEvent::LinkUp) && r.chip->linkUp() && r.chip->speedMbps() == 100 && r.chip->fullDuplex(),
 		      "LinkUp, 100 Mbps full duplex from PHYCFGR");
 		check(r.sim.resets == 1, "soft reset first");
+		check(r.chip->stats().inits == 1 && r.chip->stats().failures == 0 && r.chip->stats().transfers > 10, "stats()");
 		bool mac = true, ip = true;
 		for (int i = 0; i < 6; ++i) mac &= r.sim.common(w5500_SHAR + i) == r.cfg.mac.b[i];
 		for (int i = 0; i < 4; ++i) ip &= r.sim.common(w5500_SIPR + i) == r.cfg.ip.b[i]
@@ -136,6 +139,35 @@ int main() {
 		r.sim.link = false;
 		r.run(600);
 		check(r.host.dev.back() == DeviceEvent::LinkDown && !r.chip->linkUp() && r.chip->speedMbps() == 0, "link loss noticed by the PHY poll");
+	}
+
+	std::printf("bring-up probe\n");
+	{
+		SimW5500 *sim = new SimW5500;
+		FakeW5500Spi spi(*sim);
+		static uint32_t clock = 0;
+		w5500_probe probe(spi, [] { return clock++; });
+		uint8_t v = 0, phy = 0;
+		static uint8_t scratch[2048];
+		check(probe.version(v) == w5500_probe::Result::Ok && v == 0x04, "VERSIONR 0x04");
+		check(probe.writeRead() == w5500_probe::Result::Ok, "SHAR write/read-back");
+		check(probe.bufferTest(scratch, sizeof scratch) == w5500_probe::Result::Ok, "2 KB buffer write/read-back");
+		check(probe.phy(phy) == w5500_probe::Result::Ok && (phy & 1), "PHY link");
+		sim->stuckRead = 0x00;
+		check(probe.version(v) == w5500_probe::Result::ReadsZero, "MISO stuck low: ReadsZero");
+		sim->stuckRead = 0xFF;
+		check(probe.version(v) == w5500_probe::Result::ReadsOnes, "MISO floating: ReadsOnes");
+		sim->stuckRead = -1;
+		sim->version = 0x02;
+		check(probe.version(v) == w5500_probe::Result::WrongVersion, "another chip: WrongVersion");
+		sim->version = 0x04;
+		sim->dropWrites = true;
+		check(probe.writeRead() == w5500_probe::Result::NoWrite, "MOSI open: NoWrite");
+		sim->dropWrites = false;
+		sim->spiRefuse = true;
+		check(probe.version(v) == w5500_probe::Result::BusError, "bus never takes the transfer: BusError, after the timeout");
+		check(std::strlen(w5500_probe::describe(w5500_probe::Result::ReadsOnes)) > 20, "each result explained");
+		delete sim;
 	}
 
 	std::printf("static address reported\n");

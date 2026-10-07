@@ -8,6 +8,7 @@
 #   dhcp/                    DHCP client as pure logic, with a host test
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
+#   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
 #   examples/                a W5500 echo server for the STM32L432KC
 #   test/                    the FreeRTOS layer's threaded host test,
 #                            the FreeRTOS simulation it runs on (stub/),
@@ -84,6 +85,7 @@ endif()
 # --- DHCP and the chip drivers ----------------------------------------------
 add_subdirectory(dhcp)
 add_subdirectory(w5500)
+add_subdirectory(espat)
 
 # --- Host test -------------------------------------------------------------
 # The real xnet sources on real threads, against test/stub (FreeRTOS
@@ -97,6 +99,6 @@ if(SENSOR_FW_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
         ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
     )
-    target_link_libraries(xNet_test PRIVATE w5500_driver Threads::Threads)
+    target_link_libraries(xNet_test PRIVATE w5500_driver espat_driver Threads::Threads)
     add_test(NAME xNet_test COMMAND xNet_test)
 endif()

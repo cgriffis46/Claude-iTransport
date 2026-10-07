@@ -23,6 +23,8 @@
 #include "W5500.h"
 #include "SimW5500.h"
 #include "SimDhcpServer.h"
+#include "EspAt.h"
+#include "SimEspAt.h"
 
 using namespace std::chrono;
 
@@ -331,6 +333,58 @@ int main() {
         check(!wifi.join(longSsid.c_str(), "secret", 100), "over-long SSID refused");
         wifi.leave(1000);
         check(!wifi.linkUp(), "leave(): link down");
+        quit = true;
+        driver.join();
+    }
+
+    std::printf("xWifi on an ESP-AT module\n");
+    {
+        SimEspAt sim;
+        ESPAT::espat<FakeEspUart> esp(ESPAT::espat_param_t(), sim);
+        xWifi wifi(esp);
+        NetConfig net;
+        net.dhcp = true;
+        wifi.begin(net);
+        std::atomic<bool> quit{false};
+        std::thread driver([&] { while (!quit) wifi.service(50); });
+
+        check(wifi.waitReady(2000), "module up");
+        check(!wifi.join("home", "nope", 2000), "wrong passphrase: join() false");
+        check(wifi.join("home", "secret", 2000) && wifi.linkUp(), "join() true");
+        check(wifi.waitAddress(1000) && wifi.address().ip == sim.ip, "address from the module's DHCP");
+        {
+            xClient c(wifi);
+            check(c.connect(IpAddress(93, 184, 216, 34), 80, 2000), "connect()");
+            const char req[] = "GET / HTTP/1.0\r\n\r\n";
+            c.write(reinterpret_cast<const uint8_t*>(req), sizeof req - 1, 1000);
+            check(eventually([&] { return sim.sent(0).size() == sizeof req - 1; }), "write() reaches the module");
+
+            std::thread peer([&] { sleepMs(50); sim.peerSend(0, {'h', 'e', 'l', 'l', 'o'}); });
+            uint8_t buf[512];
+            const auto t0 = steady_clock::now();
+            const int32_t n = c.read(buf, sizeof buf, 3000);
+            const long took = msSince(t0);
+            peer.join();
+            check(n == 5 && std::memcmp(buf, "hello", 5) == 0 && took < 500,
+                  "read() sleeps until the module announces data, then fetches it");
+
+            // 8 KB down through a 1 KB stream buffer: fetched only as
+            // the reader makes room.
+            const std::vector<uint8_t> down = pattern(8000, 21);
+            sim.peerSend(0, down);
+            std::vector<uint8_t> got;
+            const auto t1 = steady_clock::now();
+            while (got.size() < down.size() && msSince(t1) < 5000) {
+                const int32_t k = c.read(buf, 300, 500);
+                if (k > 0) got.insert(got.end(), buf, buf + k);
+            }
+            check(got == down, "8 KB received intact");
+
+            std::thread closer([&] { sleepMs(50); sim.peerClose(0); });
+            const auto t2 = steady_clock::now();
+            check(c.read(buf, sizeof buf, 5000) == -1 && msSince(t2) < 1000, "peer close wakes the reader: -1");
+            closer.join();
+        }
         quit = true;
         driver.join();
     }

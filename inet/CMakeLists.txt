@@ -5,6 +5,7 @@
 #   hw/freertos/{inc,src}    xNetInterface, xEthernet, xWifi, xClient:
 #                            a driver thread, FreeRTOS queue, stream
 #                            buffers and event groups
+#   dhcp/                    DHCP client as pure logic, with a host test
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   examples/                a W5500 echo server for the STM32L432KC
@@ -80,7 +81,8 @@ if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
     target_link_libraries(xnet PUBLIC inet_core)
 endif()
 
-# --- chip drivers ----------------------------------------------------------
+# --- DHCP and the chip drivers ----------------------------------------------
+add_subdirectory(dhcp)
 add_subdirectory(w5500)
 
 # --- Host test -------------------------------------------------------------

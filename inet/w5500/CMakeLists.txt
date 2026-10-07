@@ -4,7 +4,7 @@
 #   src/W5500.tpp    its member definitions, included by inc/W5500.h
 #
 # Added by inet/CMakeLists.txt. Needs itransport's sensor_transport
-# (iBlockTransport) and inet_core (iNetDevice).
+# (iBlockTransport), inet_core (iNetDevice) and inet_dhcp.
 add_library(w5500_driver INTERFACE)
 
 target_include_directories(w5500_driver INTERFACE
@@ -13,7 +13,7 @@ target_include_directories(w5500_driver INTERFACE
 
 target_compile_features(w5500_driver INTERFACE cxx_std_17)
 
-target_link_libraries(w5500_driver INTERFACE sensor_transport inet_core)
+target_link_libraries(w5500_driver INTERFACE sensor_transport inet_core inet_dhcp)
 
 # --- Host test -----------------------------------------------------------
 # The state machine alone, on a simulated clock, against the simulated

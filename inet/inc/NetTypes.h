@@ -25,11 +25,14 @@ struct MacAddress {
         : b{a, b1, c, d, e, f} {}
 };
 
-// The interface's own address. Static only for now: a chip driver
-// that can't do DHCP (the W5500 driver, as yet) uses ip as given.
-// mac is ignored by chips that carry their own (most Wi-Fi modules).
+// The interface's own address. With dhcp set, ip/subnet/gateway/dns
+// are ignored here and come from a DHCP server instead; the address
+// actually in use is reported back through
+// iNetDeviceHost::addressChanged() either way. mac is ignored by chips
+// that carry their own (most Wi-Fi modules).
 struct NetConfig {
     MacAddress mac;
+    bool       dhcp = false;
     IpAddress  ip;
     IpAddress  subnet;
     IpAddress  gateway;

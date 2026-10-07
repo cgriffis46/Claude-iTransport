@@ -24,9 +24,12 @@
  *  that long, rather than in an osDelay(), so a request from a user
  *  thread or the INT pin wakes it at once.
  *
- *  TCP only, static address only. The W5500 has 8 sockets; each one
- *  is one connection (a listening socket becomes the connection when
- *  a peer arrives).
+ *  TCP sockets for the interface; a static address or DHCP. The W5500
+ *  has 8 sockets, each one connection (a listening socket becomes the
+ *  connection when a peer arrives). With w5500_param_t::dhcp set (the
+ *  default) the last one, socket 7, is kept back for DHCP, which runs
+ *  over it in UDP mode (inet/dhcp/DhcpClient), and the interface gets
+ *  sockets 0..6.
  */
 
 #ifndef W5500_H_
@@ -39,6 +42,7 @@
 #include "iBlockTransport.h"
 #include "iNetDevice.h"
 #include "W5500Regs.h"
+#include "DhcpClient.h"
 
 namespace W5500 {
 
@@ -53,6 +57,9 @@ const uint32_t w5500_send_timeout_ms	= 60000;	// SEND to SEND_OK, backstop as ab
 // Largest piece moved between the chip and the host in one SPI
 // transfer. RAM: the driver keeps one buffer this size.
 const uint16_t w5500_chunk_bytes = 1024;
+
+// The socket DHCP uses, when w5500_param_t::dhcp is set.
+const uint8_t w5500_dhcp_socket = 7;
 
 typedef struct w5500_param_t {
 	// Per-socket buffer sizes in KB: 0, 1, 2, 4, 8 or 16. Each
@@ -73,6 +80,13 @@ typedef struct w5500_param_t {
 	// some of those steps.
 	uint32_t busyPollMs = 2;
 	uint32_t linkPollMs = 500;
+	// Keep socket 7 back for DHCP, so NetConfig::dhcp can be used. It
+	// needs at least 1 KB each way in rxBufKb/txBufKb. Turn it off to
+	// give the interface all 8 sockets with a static address.
+	bool     dhcp = true;
+	// Mixed into DHCP transaction IDs, so devices booting together
+	// don't collide: e.g. HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2().
+	uint32_t dhcpSeed = 0;
 } w5500_param_t;
 
 enum class w5500_state_t : uint8_t {
@@ -87,6 +101,7 @@ enum class w5500_state_t : uint8_t {
 	write_bufsize,		// Sn_RXBUF_SIZE/TXBUF_SIZE, one socket per pass
 	bufsize_next,
 	write_simr,
+	addr_applied,		// SIPR/GAR/SUBR rewritten after a DHCP change: report it
 	init_phy,
 	init_done,
 	idle,				// decide what to do next
@@ -113,6 +128,18 @@ enum class w5500_state_t : uint8_t {
 	tx_wrote,
 	tx_send,
 	tx_sent,
+	dhcp_open_port,		// socket 7: UDP, port 68
+	dhcp_open_cmd,
+	dhcp_open_sr,
+	dhcp_open_check,
+	dhcp_rx_again,		// a datagram: Sn_RX_RSR twice, then its 8-byte header, then the data
+	dhcp_rx_check,
+	dhcp_rx_hdr,
+	dhcp_rx_data,
+	dhcp_rx_recv,
+	dhcp_tx_ptr,		// a DHCP packet: Sn_DIPR/DPORT written, now Sn_TX_WR
+	dhcp_tx_data,
+	dhcp_tx_wr,
 	cmd_poll,			// Sn_CR, until the chip has taken the command
 	cmd_check,
 	xfer_issue,			// every register access passes through these two
@@ -131,7 +158,7 @@ public:
 
 	// iNetDevice
 	void attach(iNetDeviceHost &host) override { _host = &host; }
-	uint8_t socketCount() const override { return w5500_sockets; }
+	uint8_t socketCount() const override { return _param.dhcp ? w5500_dhcp_socket : w5500_sockets; }
 	void configure(const NetConfig &cfg) override;
 	uint32_t poll(uint32_t nowMs) override;
 	bool connect(uint8_t s, const IpAddress &ip, uint16_t port, uint16_t localPort) override;
@@ -146,6 +173,9 @@ public:
 	w5500_state_t state() const { return _state; }
 	bool ready() const { return _ready; }
 	bool linkUp() const { return _link; }
+	// The address in use (all zeros without one). Driver thread only.
+	const NetConfig &address() const { return _net; }
+	const DhcpClient &dhcp() const { return _dhcp; }
 
 private:
 	struct Sock {
@@ -161,6 +191,7 @@ private:
 		bool      peerClosed = false;	// FIN seen: drain, then close our side
 		bool      sendInFlight = false;	// SEND issued, SEND_OK not yet seen
 		bool      txBlocked = false;	// chip TX buffer was full
+		bool      forceClose = false;	// given up on (address lost): CLOSE it on the chip, quietly
 		uint32_t  since = 0;			// entered Connecting/Closing
 		uint32_t  sendSince = 0;
 		uint32_t  txBlockedAt = 0;
@@ -185,8 +216,12 @@ private:
 	// Write Sn_CR, wait for the chip to clear it, carry on at `then`.
 	uint32_t command(uint8_t s, uint8_t cmd, w5500_state_t then, uint32_t nowMs);
 	uint32_t fail(uint32_t nowMs);
-	void dropAll(SocketEvent ev);
-	void applyPhy();
+	void dropAll(SocketEvent ev, bool closeOnChip);
+	void applyPhy(uint32_t nowMs);
+	void fillAddr();			// _w[0..18): GAR, SUBR, SHAR, SIPR from _net
+	void setAddress(const NetConfig &net);
+	void dhcpEvent(DhcpClient::Event ev);
+	uint32_t dhcpStep(uint32_t nowMs);
 	bool bufConfigValid() const;
 
 	void enter(w5500_state_t next, uint32_t nowMs) { _state = next; _since = nowMs; }
@@ -203,7 +238,13 @@ private:
 	void emitDev(DeviceEvent ev) { if (_host) _host->deviceEvent(ev); }
 
 	w5500_param_t   _param;
-	NetConfig       _cfg;
+	NetConfig       _cfg;				// what configure() asked for
+	NetConfig       _net;				// the address in use: _cfg's, or a lease, or none
+	IpAddress       _prevIp;			// last address held, to ask DHCP for again
+	DhcpClient      _dhcp;
+	bool            _dhcpOn = false;	// this configuration uses DHCP
+	bool            _dhcpOpen = false;	// socket 7 open in UDP mode
+	bool            _addrDirty = false;	// _net changed: write it to the chip and report it
 	iNetDeviceHost *_host = nullptr;
 	Sock            _sock[w5500_sockets];
 
@@ -244,6 +285,9 @@ private:
 	uint8_t  _phy = 0;
 	uint8_t  _bufIdx = 0;
 	uint8_t  _svc[2] = {0, 0};			// Sn_IR, Sn_SR
+	uint8_t  _udpHdr[8] = {0};			// a received datagram's: source IP, port, length
+	uint16_t _udpLen = 0;				// its length
+	bool     _udpRead = false;			// it fitted in _chunk and was read
 	uint8_t  _a[6] = {0};				// first read of RSR/RD or FSR/RD/WR
 	uint8_t  _b[2] = {0};				// second read of RSR or FSR
 	uint8_t  _tries = 0;

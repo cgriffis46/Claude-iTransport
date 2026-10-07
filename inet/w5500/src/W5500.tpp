@@ -31,7 +31,7 @@ void w5500<TTransport>::configure(const NetConfig &cfg) {
 
 template <typename TTransport>
 bool w5500<TTransport>::connect(uint8_t s, const IpAddress &ip, uint16_t port, uint16_t localPort) {
-	if (s >= w5500_sockets || !_configured) return false;
+	if (s >= socketCount() || !_configured) return false;
 	Sock &k = _sock[s];
 	k.req = Sock::ReqConnect;
 	k.reqIp = ip;
@@ -42,7 +42,7 @@ bool w5500<TTransport>::connect(uint8_t s, const IpAddress &ip, uint16_t port, u
 
 template <typename TTransport>
 bool w5500<TTransport>::listen(uint8_t s, uint16_t port) {
-	if (s >= w5500_sockets || !_configured) return false;
+	if (s >= socketCount() || !_configured) return false;
 	Sock &k = _sock[s];
 	k.req = Sock::ReqListen;
 	k.reqIp = IpAddress();
@@ -53,7 +53,7 @@ bool w5500<TTransport>::listen(uint8_t s, uint16_t port) {
 
 template <typename TTransport>
 void w5500<TTransport>::close(uint8_t s) {
-	if (s >= w5500_sockets) return;
+	if (s >= socketCount()) return;
 	if (!_ready) {
 		// Not running: every socket is already closed. Answer now, or
 		// whoever is waiting for Closed waits until the chip comes back.
@@ -192,6 +192,21 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 	case St::reset:
 		_reconfigure = false;	// what configure() asked for is being done now
 		if (!bufConfigValid()) return fail(nowMs);
+		_dhcpOn = _cfg.dhcp;
+		if (_dhcpOn && (!_param.dhcp || _param.rxBufKb[w5500_dhcp_socket] == 0
+		                || _param.txBufKb[w5500_dhcp_socket] == 0)) {
+			return fail(nowMs);	// DHCP asked for, but no socket kept for it
+		}
+		_dhcp.stop();
+		_dhcpOpen = false;
+		_addrDirty = false;
+		if (_dhcpOn) {
+			_net = NetConfig();	// no address until the server gives one
+			_net.mac = _cfg.mac;
+			_net.dhcp = true;
+		} else {
+			_net = _cfg;
+		}
 		_phaseStart = nowMs;
 		_w[0] = w5500_MR_RST;
 		return xfer(true, w5500_bsb_common(), w5500_MR, _w, 1, St::reset_poll, nowMs);
@@ -212,10 +227,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		enter(St::write_addr, nowMs);
 		return 0;
 	case St::write_addr:
-		for (int i = 0; i < 4; ++i) _w[i] = _cfg.gateway.b[i];
-		for (int i = 0; i < 4; ++i) _w[4 + i] = _cfg.subnet.b[i];
-		for (int i = 0; i < 6; ++i) _w[8 + i] = _cfg.mac.b[i];
-		for (int i = 0; i < 4; ++i) _w[14 + i] = _cfg.ip.b[i];
+		fillAddr();
 		return xfer(true, w5500_bsb_common(), w5500_GAR, _w, 18, St::write_retry, nowMs);
 	case St::write_retry:
 		putBe16(_w, _param.retryTime100us);
@@ -238,7 +250,12 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		_ready = true;
 		_lastSir = _lastPhy = nowMs;
 		emitDev(DeviceEvent::Ready);
-		applyPhy();
+		if (!_dhcpOn && _host) _host->addressChanged(_net);
+		applyPhy(nowMs);
+		enter(St::idle, nowMs);
+		return 0;
+	case St::addr_applied:
+		if (_host) _host->addressChanged(_net);
 		enter(St::idle, nowMs);
 		return 0;
 
@@ -249,7 +266,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		_lastPhy = nowMs;
 		return xfer(false, w5500_bsb_common(), w5500_PHYCFGR, &_phy, 1, St::check_phy, nowMs);
 	case St::check_phy:
-		applyPhy();
+		applyPhy(nowMs);
 		enter(St::idle, nowMs);
 		return 0;
 
@@ -412,6 +429,71 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		enter(St::idle, nowMs);
 		return 0;
 
+	// ---- DHCP on socket 7 ----
+	case St::dhcp_open_port:
+		putBe16(_w, DhcpClient::kClientPort);
+		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_PORT, _w, 2, St::dhcp_open_cmd, nowMs);
+	case St::dhcp_open_cmd:
+		return command(w5500_dhcp_socket, w5500_CR_OPEN, St::dhcp_open_sr, nowMs);
+	case St::dhcp_open_sr:
+		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_SR, &_svc[1], 1, St::dhcp_open_check, nowMs);
+	case St::dhcp_open_check:
+		if (_svc[1] != w5500_SOCK_UDP) return fail(nowMs);
+		_dhcpOpen = true;
+		_dhcp.begin(_cfg.mac, _param.dhcpSeed ^ (nowMs * 2654435761u), nowMs, _prevIp);
+		enter(St::idle, nowMs);
+		return 0;
+	case St::dhcp_rx_again:
+		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RSR, _b, 2, St::dhcp_rx_check, nowMs);
+	case St::dhcp_rx_check: {
+		const uint16_t rsr = be16(_b);
+		if (be16(_a) != rsr) {
+			if (++_tries > 8) return fail(nowMs);
+			return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RSR, _a, 4, St::dhcp_rx_again, nowMs);
+		}
+		if (rsr < sizeof _udpHdr) {	// nothing (or nothing whole) to read
+			k.rxPending = false;
+			enter(St::idle, nowMs);
+			return 0;
+		}
+		_fsr = rsr;
+		_ptr = be16(_a + 2);
+		// Each datagram in a UDP socket's buffer starts with 8 bytes:
+		// source IP, source port, data length.
+		return xfer(false, w5500_bsb_sock_rx(w5500_dhcp_socket), _ptr, _udpHdr, sizeof _udpHdr, St::dhcp_rx_hdr, nowMs);
+	}
+	case St::dhcp_rx_hdr: {
+		uint16_t len = be16(_udpHdr + 6);
+		if (len > _fsr - sizeof _udpHdr) len = static_cast<uint16_t>(_fsr - sizeof _udpHdr);
+		_udpLen = len;
+		_udpRead = len != 0 && len <= w5500_chunk_bytes;
+		if (!_udpRead) {	// too big to be DHCP: skip it
+			enter(St::dhcp_rx_data, nowMs);
+			return 0;
+		}
+		_moved = len;
+		return xfer(false, w5500_bsb_sock_rx(w5500_dhcp_socket), static_cast<uint16_t>(_ptr + sizeof _udpHdr),
+		            _chunk, len, St::dhcp_rx_data, nowMs);
+	}
+	case St::dhcp_rx_data:
+		if (_udpRead && be16(_udpHdr + 4) == DhcpClient::kServerPort) {
+			dhcpEvent(_dhcp.receive(_chunk, _udpLen, nowMs).event);
+		}
+		_ptr = static_cast<uint16_t>(_ptr + sizeof _udpHdr + _udpLen);
+		putBe16(_w, _ptr);
+		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RD, _w, 2, St::dhcp_rx_recv, nowMs);
+	case St::dhcp_rx_recv:
+		return command(w5500_dhcp_socket, w5500_CR_RECV, St::idle, nowMs);	// rxPending stays set until RSR reads 0
+	case St::dhcp_tx_ptr:
+		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_TX_WR, _b, 2, St::dhcp_tx_data, nowMs);
+	case St::dhcp_tx_data:
+		_ptr = be16(_b);
+		return xfer(true, w5500_bsb_sock_tx(w5500_dhcp_socket), _ptr, _chunk, _moved, St::dhcp_tx_wr, nowMs);
+	case St::dhcp_tx_wr:
+		_ptr = static_cast<uint16_t>(_ptr + _moved);
+		putBe16(_w, _ptr);
+		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_TX_WR, _w, 2, St::tx_send, nowMs);	// then SEND, as for TCP
+
 	case St::error:
 		// A transfer given up on may still be in flight; it has to land
 		// before the bus is free for the next.
@@ -428,8 +510,13 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 template <typename TTransport>
 uint32_t w5500<TTransport>::schedule(uint32_t nowMs) {
 	if (_reconfigure) {
-		dropAll(SocketEvent::Failed);
+		dropAll(SocketEvent::Failed, false);
 		_ready = false;
+		if (!_net.ip.isZero()) {
+			_prevIp = _net.ip;
+			_net = NetConfig();
+			if (_host) _host->addressChanged(_net);
+		}
 		if (_link) {
 			_link = false;
 			emitDev(DeviceEvent::LinkDown);
@@ -438,9 +525,16 @@ uint32_t w5500<TTransport>::schedule(uint32_t nowMs) {
 		return 0;
 	}
 
-	// 1. What the user asked for.
-	for (uint8_t s = 0; s < w5500_sockets; ++s) {
-		if (_sock[s].req != Sock::NoReq) return startRequest(s, nowMs);
+	// 1. What the user asked for. Connects and listens wait for an
+	//    address; closes don't.
+	const bool haveAddr = !_net.ip.isZero();
+	for (uint8_t s = 0; s < socketCount(); ++s) {
+		Sock &k = _sock[s];
+		if (k.forceClose) {
+			k.forceClose = false;
+			return command(s, w5500_CR_CLOSE, St::idle, nowMs);
+		}
+		if (k.req == Sock::ReqClose || (k.req != Sock::NoReq && haveAddr)) return startRequest(s, nowMs);
 	}
 
 	// 2. The INT pin.
@@ -466,11 +560,21 @@ uint32_t w5500<TTransport>::schedule(uint32_t nowMs) {
 			return command(s, w5500_CR_CLOSE, St::idle, nowMs);
 		}
 		if (k.sendInFlight && after(nowMs, k.sendSince, w5500_send_timeout_ms)) {
+			if (_dhcpOn && s == w5500_dhcp_socket) {	// a lost DHCP packet: DHCP's own retry covers it
+				k.sendInFlight = false;
+				continue;
+			}
 			k = Sock();
 			emit(s, SocketEvent::Failed);
 			return command(s, w5500_CR_CLOSE, St::idle, nowMs);
 		}
 		if (after(nowMs, k.lastSvc, _param.busyPollMs)) return service(s, false, nowMs);
+	}
+
+	// 3b. DHCP: the address, the socket, and its packets.
+	if (_addrDirty || _dhcpOn) {
+		const uint32_t w = dhcpStep(nowMs);
+		if (w == 0) return 0;
 	}
 
 	// 4. Received data, if the host has room. Round robin so one busy
@@ -542,6 +646,10 @@ uint32_t w5500<TTransport>::idleWait(uint32_t nowMs) const {
 			if (w < wait) wait = w;
 		}
 	}
+	if (_dhcpOpen && !_sock[w5500_dhcp_socket].sendInFlight) {
+		const uint32_t w = _dhcp.nextWakeMs(nowMs);
+		if (w < wait) wait = w;
+	}
 	return wait == 0 ? 1 : wait;
 }
 
@@ -602,6 +710,7 @@ uint32_t w5500<TTransport>::evaluate(uint8_t s, uint8_t ir, uint8_t sr, uint32_t
 	Sock &k = _sock[s];
 	if (ir & w5500_IR_SENDOK) k.sendInFlight = false;
 	if (ir & w5500_IR_RECV) k.rxPending = true;
+	if (k.mode == Sock::Closed && (ir & w5500_IR_TIMEOUT)) k.sendInFlight = false;	// UDP: ARP for the destination failed
 
 	switch (k.mode) {
 	case Sock::Connecting:
@@ -647,8 +756,18 @@ uint32_t w5500<TTransport>::evaluate(uint8_t s, uint8_t ir, uint8_t sr, uint32_t
 // starts again from reset after a pause.
 template <typename TTransport>
 uint32_t w5500<TTransport>::fail(uint32_t nowMs) {
-	dropAll(SocketEvent::Failed);
+	dropAll(SocketEvent::Failed, false);
 	_ready = false;
+	_dhcp.stop();
+	_dhcpOpen = false;
+	_addrDirty = false;
+	if (!_net.ip.isZero()) {
+		_prevIp = _net.ip;
+		const MacAddress mac = _net.mac;
+		_net = NetConfig();
+		_net.mac = mac;
+		if (_host) _host->addressChanged(_net);
+	}
 	_irq = false;
 	_sirRecheck = false;
 	if (_link) {
@@ -660,25 +779,95 @@ uint32_t w5500<TTransport>::fail(uint32_t nowMs) {
 	return 0;
 }
 
+// closeOnChip: the chip carries on (the address changed), so each
+// socket that was open is closed on it too. Otherwise the chip is
+// about to be reset anyway, and the DHCP socket goes with the rest.
 template <typename TTransport>
-void w5500<TTransport>::dropAll(SocketEvent ev) {
-	for (uint8_t s = 0; s < w5500_sockets; ++s) {
+void w5500<TTransport>::dropAll(SocketEvent ev, bool closeOnChip) {
+	const uint8_t n = closeOnChip ? socketCount() : w5500_sockets;
+	for (uint8_t s = 0; s < n; ++s) {
 		Sock &k = _sock[s];
 		const bool open = k.mode != Sock::Closed;
 		const bool opening = k.req == Sock::ReqConnect || k.req == Sock::ReqListen;
 		const bool closing = k.req == Sock::ReqClose;
 		k = Sock();
+		k.forceClose = closeOnChip && open;
 		if (open || opening) emit(s, ev);
 		else if (closing) emit(s, SocketEvent::Closed);
 	}
 }
 
 template <typename TTransport>
-void w5500<TTransport>::applyPhy() {
+void w5500<TTransport>::fillAddr() {
+	for (int i = 0; i < 4; ++i) _w[i] = _net.gateway.b[i];
+	for (int i = 0; i < 4; ++i) _w[4 + i] = _net.subnet.b[i];
+	for (int i = 0; i < 6; ++i) _w[8 + i] = _net.mac.b[i];
+	for (int i = 0; i < 4; ++i) _w[14 + i] = _net.ip.b[i];
+}
+
+// A new address (or none). Connections on the old one can't survive it.
+template <typename TTransport>
+void w5500<TTransport>::setAddress(const NetConfig &net) {
+	if (net.ip == _net.ip && net.subnet == _net.subnet && net.gateway == _net.gateway && net.dns == _net.dns) return;
+	if (!_net.ip.isZero() && net.ip != _net.ip) {
+		_prevIp = _net.ip;
+		dropAll(SocketEvent::Failed, true);
+	}
+	_net = net;
+	_addrDirty = true;
+}
+
+template <typename TTransport>
+void w5500<TTransport>::dhcpEvent(DhcpClient::Event ev) {
+	if (ev == DhcpClient::Event::None) return;
+	NetConfig net;
+	if (ev == DhcpClient::Event::Bound) net = _dhcp.lease();
+	net.mac = _cfg.mac;
+	net.dhcp = true;
+	setAddress(net);
+}
+
+// Returns 0 having started something, non-zero if there was nothing.
+template <typename TTransport>
+uint32_t w5500<TTransport>::dhcpStep(uint32_t nowMs) {
+	if (_addrDirty) {
+		_addrDirty = false;
+		fillAddr();
+		return xfer(true, w5500_bsb_common(), w5500_GAR, _w, 18, St::addr_applied, nowMs);
+	}
+	if (!_dhcpOn) return 1;
+	Sock &k = _sock[w5500_dhcp_socket];
+	_cur = w5500_dhcp_socket;
+	if (!_dhcpOpen) {
+		k = Sock();
+		_w[0] = w5500_Sn_MR_UDP;
+		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_MR, _w, 1, St::dhcp_open_port, nowMs);
+	}
+	if (k.rxPending) {
+		_tries = 0;
+		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RSR, _a, 4, St::dhcp_rx_again, nowMs);
+	}
+	if (k.sendInFlight) return 1;
+	const DhcpClient::Action a = _dhcp.poll(nowMs, _chunk, w5500_chunk_bytes);
+	dhcpEvent(a.event);
+	if (a.len != 0) {
+		_moved = static_cast<uint16_t>(a.len);
+		for (int i = 0; i < 4; ++i) _w[i] = a.dst.b[i];
+		putBe16(_w + 4, DhcpClient::kServerPort);
+		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_DIPR, _w, 6, St::dhcp_tx_ptr, nowMs);
+	}
+	return _addrDirty ? 0 : 1;	// a Lost with nothing to send: apply it on the next pass
+}
+
+template <typename TTransport>
+void w5500<TTransport>::applyPhy(uint32_t nowMs) {
 	const bool up = (_phy & w5500_PHY_LNK) != 0;
 	if (up == _link) return;
 	_link = up;
 	emitDev(up ? DeviceEvent::LinkUp : DeviceEvent::LinkDown);
+	// Plugged back in, perhaps somewhere else: check the lease now
+	// rather than at T1 (or, still looking for one, ask again now).
+	if (up && _dhcpOpen) _dhcp.linkRestored(nowMs);
 }
 
 template <typename TTransport>

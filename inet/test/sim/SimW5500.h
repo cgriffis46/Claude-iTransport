@@ -38,6 +38,8 @@ public:
     // reaching the chip; or the bus won't take a transfer at all.
     bool     spiFailNext = false;
     bool     spiRefuse = false;
+    // A UDP socket sent a datagram (called with no lock held).
+    std::function<void(uint8_t s, IpAddress dst, uint16_t port, std::vector<uint8_t> data)> onUdpSend;
 
     // ---- what happened ----
     int resets = 0;
@@ -47,6 +49,7 @@ public:
 
     void access(bool write, const uint8_t* hdr, uint8_t* data, size_t len) {
         bool fire;
+        std::vector<Datagram> out;
         {
             std::lock_guard<std::recursive_mutex> g(m_);
             ++transfers;
@@ -56,11 +59,31 @@ public:
             if (write) writeBlock(bsb, addr, data, len);
             else       readBlock(bsb, addr, data, len);
             fire = sirLocked() & ~before;
+            out.swap(udpOut_);
         }
         if (fire && onIrq) onIrq();
+        for (auto& d : out) if (onUdpSend) onUdpSend(d.s, d.dst, d.port, d.data);
     }
 
     // ---- the network's side ----
+    // A datagram arrives for UDP socket s.
+    bool peerSendUdp(uint8_t s, const IpAddress& src, uint16_t srcPort, const uint8_t* data, size_t n) {
+        bool ok = false;
+        withIrq([&] {
+            Sock& k = sock_[s];
+            if (k.reg[W5500::w5500_Sn_SR] != W5500::w5500_SOCK_UDP) return;
+            const size_t size = rxSize(s);
+            if (size - static_cast<uint16_t>(k.rxWr - k.rxRd) < n + 8) return; // dropped, as on the chip
+            const uint8_t hdr[8] = {src.b[0], src.b[1], src.b[2], src.b[3],
+                                    uint8_t(srcPort >> 8), uint8_t(srcPort), uint8_t(n >> 8), uint8_t(n)};
+            for (uint8_t b : hdr) k.rx[(k.rxWr++) & (size - 1)] = b;
+            for (size_t i = 0; i < n; ++i) k.rx[(k.rxWr++) & (size - 1)] = data[i];
+            k.ir |= W5500::w5500_IR_RECV;
+            ok = true;
+        });
+        return ok;
+    }
+
     size_t peerSend(uint8_t s, const uint8_t* data, size_t n) {
         size_t done = 0;
         withIrq([&] {
@@ -109,6 +132,9 @@ public:
     uint16_t connectedPort(uint8_t s) { std::lock_guard<std::recursive_mutex> g(m_); return sock_[s].dport; }
 
 private:
+    struct Datagram { uint8_t s; IpAddress dst; uint16_t port; std::vector<uint8_t> data; };
+    std::vector<Datagram> udpOut_;
+
     struct Sock {
         uint8_t  reg[0x30] = {0};
         uint8_t  ir = 0;
@@ -241,6 +267,7 @@ private:
         switch (cmd) {
         case W5500::w5500_CR_OPEN:
             if ((k.reg[W5500::w5500_Sn_MR] & 0x0F) == W5500::w5500_Sn_MR_TCP) sr = W5500::w5500_SOCK_INIT;
+            if ((k.reg[W5500::w5500_Sn_MR] & 0x0F) == W5500::w5500_Sn_MR_UDP) sr = W5500::w5500_SOCK_UDP;
             k.txRd = k.txWr = k.rxRd = k.rxWr = ptrStart;
             k.sent.clear();
             k.sends = 0;
@@ -266,6 +293,17 @@ private:
             break;
         case W5500::w5500_CR_SEND: {
             const size_t size = txSize(s);
+            if (sr == W5500::w5500_SOCK_UDP) {
+                Datagram d;
+                d.s = s;
+                std::memcpy(d.dst.b, k.reg + W5500::w5500_Sn_DIPR, 4);
+                d.port = static_cast<uint16_t>((k.reg[W5500::w5500_Sn_DPORT] << 8) | k.reg[W5500::w5500_Sn_DPORT + 1]);
+                while (k.txRd != k.txWr) d.data.push_back(k.tx[(k.txRd++) & (size - 1)]);
+                udpOut_.push_back(d);
+                ++k.sends;
+                k.ir |= W5500::w5500_IR_SENDOK;
+                break;
+            }
             while (k.txRd != k.txWr) k.sent.push_back(k.tx[(k.txRd++) & (size - 1)]);
             ++k.sends;
             if (!deferSendOk) k.ir |= W5500::w5500_IR_SENDOK;

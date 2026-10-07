@@ -15,6 +15,7 @@
 #include <vector>
 #include "W5500.h"
 #include "SimW5500.h"
+#include "SimDhcpServer.h"
 
 using namespace W5500;
 
@@ -44,6 +45,8 @@ struct Host : iNetDeviceHost {
 	}
 	void socketEvent(uint8_t s, SocketEvent e) override { events.push_back({s, e}); }
 	void deviceEvent(DeviceEvent e) override { dev.push_back(e); }
+	void addressChanged(const NetConfig &c) override { addrs.push_back(c); }
+	std::vector<NetConfig> addrs;
 
 	bool overrun = false;
 	bool has(int s, SocketEvent e) const {
@@ -83,6 +86,22 @@ struct Rig {
 		}
 	}
 	void start() { chip->configure(cfg); run(20); }
+
+	// A DHCP server on the simulated network.
+	SimDhcpServer dhcpSrv;
+	int udpSends = 0;
+	IpAddress lastUdpDst;
+	uint16_t lastUdpPort = 0;
+	void serveDhcp() {
+		cfg.dhcp = true;
+		sim.onUdpSend = [this](uint8_t s, IpAddress dst, uint16_t port, std::vector<uint8_t> data) {
+			++udpSends;
+			lastUdpDst = dst;
+			lastUdpPort = port;
+			const std::vector<uint8_t> reply = dhcpSrv.handle(data.data(), data.size());
+			if (!reply.empty()) sim.peerSendUdp(s, dhcpSrv.server, 67, reply.data(), reply.size());
+		};
+	}
 };
 
 static std::vector<uint8_t> pattern(size_t n, uint8_t seed) {
@@ -117,6 +136,72 @@ int main() {
 		r.sim.link = false;
 		r.run(600);
 		check(r.host.dev.back() == DeviceEvent::LinkDown && !r.chip->linkUp() && r.chip->speedMbps() == 0, "link loss noticed by the PHY poll");
+	}
+
+	std::printf("static address reported\n");
+	{
+		Rig r;
+		r.start();
+		check(r.host.addrs.size() == 1 && r.host.addrs[0].ip == r.cfg.ip, "addressChanged() with the static address at start-up");
+		check(r.chip->socketCount() == 7, "7 sockets for the interface: socket 7 kept for DHCP");
+		w5500_param_t p;
+		p.dhcp = false;
+		Rig r8(p);
+		check(r8.chip->socketCount() == 8, "all 8 with dhcp off");
+		r8.serveDhcp();
+		r8.start();
+		check(!r8.chip->ready() && r8.host.hasDev(DeviceEvent::Failed), "NetConfig::dhcp without the socket kept for it: Failed");
+	}
+
+	std::printf("DHCP\n");
+	{
+		Rig r;
+		r.serveDhcp();
+		r.dhcpSrv.silent = true;	// server slow to answer
+		r.start();
+		check(r.chip->ready() && r.host.addrs.empty(), "chip ready, no address yet");
+		check(r.sim.status(7) == w5500_SOCK_UDP && r.sim.sockReg16(7, w5500_Sn_PORT) == 68, "socket 7 open, UDP, port 68");
+		check(r.udpSends == 1 && r.lastUdpDst == IpAddress(255, 255, 255, 255) && r.lastUdpPort == 67, "DISCOVER broadcast to port 67");
+		check(r.sim.common(w5500_SIPR) == 0 && r.sim.common(w5500_SIPR + 3) == 0, "SIPR 0.0.0.0 meanwhile");
+
+		r.chip->connect(0, IpAddress(192, 168, 1, 10), 80, 0);
+		r.run(50);
+		check(!r.host.has(0, SocketEvent::Connected) && r.sim.status(0) == w5500_SOCK_CLOSED, "connect() held until there is an address");
+
+		r.dhcpSrv.silent = false;
+		r.run(2100);	// the DISCOVER retry
+		check(r.host.addrs.size() == 1 && r.host.addrs[0].ip == r.dhcpSrv.offerIp, "address reported once leased");
+		const NetConfig &a = r.host.addrs[0];
+		check(a.gateway == r.dhcpSrv.router && a.subnet == r.dhcpSrv.subnet && a.dns == r.dhcpSrv.dns && a.dhcp,
+		      "with gateway, mask and DNS");
+		bool sipr = true, gar = true;
+		for (int i = 0; i < 4; ++i) {
+			sipr &= r.sim.common(w5500_SIPR + i) == r.dhcpSrv.offerIp.b[i];
+			gar &= r.sim.common(w5500_GAR + i) == r.dhcpSrv.router.b[i];
+		}
+		check(sipr && gar, "written to SIPR/GAR");
+		check(r.host.has(0, SocketEvent::Connected), "the held connect() then goes ahead");
+
+		// Renewal at T1 (half of 3600 s), same address: nothing changes.
+		r.dhcpSrv.leaseSec = 3600;
+		const int requests = r.dhcpSrv.requests;
+		for (int i = 0; i < 1810; ++i) r.run(1000);
+		check(r.dhcpSrv.requests == requests + 1 && r.dhcpSrv.lastCiaddr == r.dhcpSrv.offerIp, "renewed at T1");
+		check(r.host.addrs.size() == 1 && !r.host.has(0, SocketEvent::Failed), "same address: no change, connection kept");
+
+		// Cable out and back: the lease is checked at once, and refused here.
+		r.dhcpSrv.nak = true;
+		r.sim.link = false;
+		r.run(600);
+		r.sim.link = true;
+		r.run(600);
+		check(r.host.addrs.size() >= 2 && r.host.addrs[1].ip.isZero(), "link back, lease NAKed: address lost");
+		check(r.host.has(0, SocketEvent::Failed) && r.sim.status(0) == w5500_SOCK_CLOSED, "its connection Failed, and closed on the chip");
+		check(r.sim.common(w5500_SIPR) == 0, "SIPR cleared");
+		r.dhcpSrv.nak = false;
+		r.dhcpSrv.offerIp = IpAddress(192, 168, 1, 88);
+		r.run(5000);
+		check(r.host.addrs.back().ip == IpAddress(192, 168, 1, 88), "and a new lease is taken");
 	}
 
 	std::printf("not a W5500\n");

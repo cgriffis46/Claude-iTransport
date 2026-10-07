@@ -65,6 +65,11 @@ public:
 
     virtual void socketEvent(uint8_t s, SocketEvent ev) = 0;
     virtual void deviceEvent(DeviceEvent ev) = 0;
+
+    // The address in use changed: a static address applied, a DHCP
+    // lease obtained or renewed with a different address, or (ip all
+    // zeros) the address lost. Every open socket is lost with it.
+    virtual void addressChanged(const NetConfig& cfg) = 0;
 };
 
 // Implemented by a chip driver.
@@ -75,7 +80,8 @@ public:
     // Who to report to. Called once, before anything else.
     virtual void attach(iNetDeviceHost& host) = 0;
 
-    // Sockets the chip has. The interface uses at most this many.
+    // Sockets the interface may use, 0..socketCount()-1. A driver can
+    // keep some of the chip's for itself (the W5500's DHCP socket).
     virtual uint8_t socketCount() const = 0;
 
     // Starts (or restarts) the chip with this address. Until the first
@@ -88,7 +94,7 @@ public:
     virtual uint32_t poll(uint32_t nowMs) = 0;
 
     // Open socket s as a TCP client. Completes with Connected or
-    // Failed. localPort: 0 lets the driver pick. Whatever socket s was
+    // Failed. Held until the interface has an address. localPort: 0 lets the driver pick. Whatever socket s was
     // doing before is dropped without an event: from here on, events
     // on s are about this connection. false: s out of range, or the
     // driver can't take requests (not configured) — no event follows.

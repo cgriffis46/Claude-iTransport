@@ -155,6 +155,22 @@ bool xNetInterface::waitLinkUp(uint32_t timeoutMs) {
     return (xEventGroupWaitBits(events_, kIfLink, pdFALSE, pdFALSE, toTicks(timeoutMs)) & kIfLink) != 0;
 }
 
+bool xNetInterface::hasAddress() const {
+    return events_ != nullptr && (xEventGroupGetBits(events_) & kIfAddress) != 0;
+}
+
+bool xNetInterface::waitAddress(uint32_t timeoutMs) {
+    if (events_ == nullptr) return false;
+    return (xEventGroupWaitBits(events_, kIfAddress, pdFALSE, pdFALSE, toTicks(timeoutMs)) & kIfAddress) != 0;
+}
+
+NetConfig xNetInterface::address() const {
+    taskENTER_CRITICAL();
+    const NetConfig a = addr_;
+    taskEXIT_CRITICAL();
+    return a;
+}
+
 // ---- sockets, for xClient ----
 
 int xNetInterface::claim(xClient* owner) {
@@ -252,5 +268,16 @@ void xNetInterface::deviceEvent(DeviceEvent ev) {
     case DeviceEvent::JoinFailed:
         xEventGroupSetBits(events_, kIfJoinFailed);
         break;
+    }
+}
+
+void xNetInterface::addressChanged(const NetConfig& cfg) {
+    taskENTER_CRITICAL();
+    addr_ = cfg;
+    taskEXIT_CRITICAL();
+    if (cfg.ip.isZero()) {
+        xEventGroupClearBits(events_, kIfAddress);
+    } else {
+        xEventGroupSetBits(events_, kIfAddress);
     }
 }

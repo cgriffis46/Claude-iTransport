@@ -72,6 +72,7 @@ const uint8_t w5500_PHY_SPD = 0x02;		// 1: 100 Mbps
 const uint8_t w5500_PHY_DPX = 0x04;		// 1: full duplex
 
 const uint8_t w5500_Sn_MR_TCP = 0x01;
+const uint8_t w5500_Sn_MR_UDP = 0x02;
 const uint8_t w5500_Sn_MR_ND  = 0x20;	// TCP: ACK at once, no delayed ACK
 
 typedef enum w5500_cmd_t {
@@ -101,7 +102,8 @@ typedef enum w5500_sock_status_t {
 	w5500_SOCK_CLOSING		= 0x1A,
 	w5500_SOCK_TIME_WAIT	= 0x1B,
 	w5500_SOCK_CLOSE_WAIT	= 0x1C,
-	w5500_SOCK_LAST_ACK		= 0x1D
+	w5500_SOCK_LAST_ACK		= 0x1D,
+	w5500_SOCK_UDP			= 0x22
 } w5500_sock_status_t;
 
 } /* namespace W5500 */

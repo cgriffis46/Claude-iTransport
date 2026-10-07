@@ -22,6 +22,7 @@
 #include "xClient.h"
 #include "W5500.h"
 #include "SimW5500.h"
+#include "SimDhcpServer.h"
 
 using namespace std::chrono;
 
@@ -64,8 +65,10 @@ struct Rig {
     std::atomic<bool> quit{false};
     std::thread driver;
 
+    SimDhcpServer dhcpSrv;
+
     explicit Rig(W5500::w5500_param_t p = W5500::w5500_param_t(),
-                 xNetInterface::Config c = xNetInterface::Config(), bool irq = false) {
+                 xNetInterface::Config c = xNetInterface::Config(), bool irq = false, bool dhcp = false) {
         chip.reset(new Chip(p, *sim));
         eth.reset(new xEthernet(*chip, c));
         if (irq) sim->onIrq = [this] { eth->interruptFromIsr(); };
@@ -74,6 +77,11 @@ struct Rig {
         net.ip = IpAddress(192, 168, 1, 50);
         net.subnet = IpAddress(255, 255, 255, 0);
         net.gateway = IpAddress(192, 168, 1, 1);
+        net.dhcp = dhcp;
+        sim->onUdpSend = [this](uint8_t s, IpAddress, uint16_t, std::vector<uint8_t> data) {
+            const std::vector<uint8_t> reply = dhcpSrv.handle(data.data(), data.size());
+            if (!reply.empty()) sim->peerSendUdp(s, dhcpSrv.server, 67, reply.data(), reply.size());
+        };
         eth->begin(net);
         driver = std::thread([this] { while (!quit) eth->service(20); });
     }
@@ -118,6 +126,21 @@ int main() {
         check(r.eth->waitReady(1000), "waitReady()");
         check(r.eth->waitLinkUp(1000) && r.eth->linkUp(), "waitLinkUp()");
         check(r.eth->socketCount() == 4, "4 sockets (Config::maxSockets)");
+        check(r.eth->waitAddress(1000) && r.eth->address().ip == IpAddress(192, 168, 1, 50), "static address in use");
+    }
+
+    std::printf("DHCP\n");
+    {
+        Rig r(W5500::w5500_param_t(), xNetInterface::Config(), false, /*dhcp=*/true);
+        r.eth->waitReady(1000);
+        xClient c(*r.eth);
+        // Asked before there is an address: held until the lease arrives.
+        const auto t0 = steady_clock::now();
+        check(c.connect(kServer, 80, 2000), "connect() straight after begin() succeeds once leased");
+        check(msSince(t0) < 1000, "promptly");
+        check(r.eth->hasAddress(), "hasAddress()");
+        const NetConfig a = r.eth->address();
+        check(a.ip == r.dhcpSrv.offerIp && a.gateway == r.dhcpSrv.router && a.dns == r.dhcpSrv.dns, "address() is the lease");
     }
 
     std::printf("connect, write, read\n");

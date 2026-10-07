@@ -88,6 +88,15 @@ public:
     bool linkUp() const;
     bool waitLinkUp(uint32_t timeoutMs);
 
+    // An address is in use: the static one applied, or a DHCP lease.
+    // Sockets can't connect before this.
+    bool hasAddress() const;
+    bool waitAddress(uint32_t timeoutMs);
+
+    // The address in use (all zeros without one) — with DHCP, what the
+    // server handed out, including gateway and DNS.
+    NetConfig address() const;
+
     uint8_t socketCount() const { return nSockets_; }
 
 protected:
@@ -118,6 +127,7 @@ protected:
     static constexpr EventBits_t kIfLink       = 1u << 2;
     static constexpr EventBits_t kIfJoinFailed = 1u << 3;
     static constexpr EventBits_t kIfLinkDown   = 1u << 4; // kIfLink's opposite, to wait on
+    static constexpr EventBits_t kIfAddress    = 1u << 5;
     EventGroupHandle_t events_ = nullptr;
 
     iNetDevice& dev_;
@@ -159,11 +169,13 @@ private:
     size_t txTake(uint8_t s, uint8_t* dst, size_t max) override;
     void   socketEvent(uint8_t s, SocketEvent ev) override;
     void   deviceEvent(DeviceEvent ev) override;
+    void   addressChanged(const NetConfig& cfg) override;
 
     Config        cfg_;
     uint8_t       nSockets_ = 0;
     QueueHandle_t inbox_ = nullptr;
     Slot          slots_[kMaxSockets];
+    NetConfig     addr_;                   // written by the driver thread, inside a critical section
 
     std::atomic<bool> kickPending_{false}; // a Kick is in the inbox, or the driver is about to look anyway
     std::atomic<bool> irqPending_{false};

@@ -154,6 +154,11 @@ STM32L432KC (L4).
   merging, and re-run the tests if it moved.
 - Commit messages explain what changed and how it was verified. Never
   put a model name in commits, PRs or code.
+- Every change that adds, changes, removes or fixes something gets an
+  entry in `CHANGELOG.md`, in the same commit. Put it under
+  `## Unreleased`, under today's date heading (add one if needed, newest
+  first), and in the right group: Added, Changed, Removed or Fixed.
+  Name what changed and link the pull request once it exists.
 - Be explicit about what was not verified (hardware, STM32CubeIDE).
 
 ## History (October 2026)

@@ -10,6 +10,8 @@ pull request, newest first.
 ### 2026-10-07
 
 #### Added
+- `CHANGELOG.md`, and a rule in `CLAUDE.md` to keep it up to date with
+  every change ([#11](https://github.com/cgriffis46/Claude-iTransport/pull/11)).
 - `CLAUDE.md`: the layout, how drivers are written and tested, build
   commands, the related STM32_Static_Lib_Src libraries, history and
   open items ([#10](https://github.com/cgriffis46/Claude-iTransport/pull/10)).

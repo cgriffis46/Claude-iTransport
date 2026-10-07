@@ -25,9 +25,9 @@ endif()
 if(SENSOR_FW_BUILD_TESTS)
     # Runs the driver on a bare iTransport, and on itransport's real
     # Stm32HalUartTransport over the simulated HAL UART in
-    # itransport/test/stub_hal.
-    set(STUB_HAL ${CMAKE_CURRENT_SOURCE_DIR}/../../itransport/test/stub_hal)
-    set(STM32_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../../itransport/hw/stm32/src)
+    # itransport/test/stub_hal (ITRANSPORT_DIR, set by isensor/).
+    set(STUB_HAL ${ITRANSPORT_DIR}/test/stub_hal)
+    set(STM32_SRC ${ITRANSPORT_DIR}/hw/stm32/src)
     add_executable(PM25_test
         test/PM25_test.cpp
         ${STUB_HAL}/fake_hal.cpp
@@ -37,7 +37,7 @@ if(SENSOR_FW_BUILD_TESTS)
     target_include_directories(PM25_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
         ${STUB_HAL}
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../itransport/hw/stm32/inc
+        ${ITRANSPORT_DIR}/hw/stm32/inc
     )
     target_link_libraries(PM25_test PRIVATE pm25_sensor)
     add_test(NAME PM25_test COMMAND PM25_test)

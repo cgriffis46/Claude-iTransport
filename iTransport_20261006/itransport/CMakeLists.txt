@@ -2,7 +2,7 @@
 #
 # Pulled in with add_subdirectory() — by iTransport_20261006's own
 # top-level CMakeLists.txt, or by another project that wants the
-# transports, e.g. safeTransport_20261004:
+# transports, e.g. isensor/ or safeTransport_20261004:
 #
 #   add_subdirectory(../iTransport_20261006/itransport itransport)
 #

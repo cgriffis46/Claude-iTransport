@@ -2,8 +2,43 @@
 # SensorStateMachine every sensor driver builds on, and the drivers
 # themselves, one folder each (added at the end of this file).
 #
-# Needs itransport's sensor_transport target, so add_subdirectory()
-# itransport before this folder.
+# Every module has the same shape:
+#   {inc,src,lib}              platform-independent code
+#   hw/<platform>/{inc,src}    freertos, linux
+#   <sensor>/                  aht20/, bme280/, bmp280/, DS18B20/, HMC6352/,
+#                              htu21df/, lps35hw/, mpl3115a2/, PM25/, sht31/,
+#                              si7021/: class templates, the class in inc/,
+#                              its member definitions in src/*.tpp, each
+#                              with a host test
+#
+# Needs itransport's sensor_transport target. Built on its own, this
+# file adds itransport from ITRANSPORT_DIR itself; a project that
+# includes this folder with add_subdirectory() adds itransport first.
+#
+# Building and running the host tests on a PC:
+#   cmake -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF \
+#         -DSENSOR_FW_BUILD_TESTS=ON
+#   cmake --build build
+#   ctest --test-dir build
+#
+# The other options (SENSOR_FW_HARDWARE, CMSIS_RTOS_INCLUDE_DIR, ...)
+# are itransport's; see its CMakeLists.txt.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    cmake_minimum_required(VERSION 3.16)
+    project(isensor LANGUAGES CXX)
+
+    option(SENSOR_FW_BUILD_TESTS "Build the host tests (no hardware, HAL or RTOS needed)" OFF)
+    if(SENSOR_FW_BUILD_TESTS)
+        enable_testing()
+    endif()
+endif()
+
+set(ITRANSPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../iTransport_20261006/itransport
+    CACHE PATH "The itransport folder to build against")
+
+if(NOT TARGET sensor_transport)
+    add_subdirectory(${ITRANSPORT_DIR} itransport)
+endif()
 
 # Static libraries are written to isensor/lib rather than the build tree.
 set(ISENSOR_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)

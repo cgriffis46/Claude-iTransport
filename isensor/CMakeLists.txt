@@ -6,8 +6,9 @@
 #   {inc,src,lib}              platform-independent code
 #   hw/<platform>/{inc,src}    freertos, linux
 #   <sensor>/                  aht20/, bme280/, bmp280/, DS18B20/, HMC6352/,
-#                              htu21df/, lps35hw/, mpl3115a2/, PM25/, sht31/,
-#                              si7021/: class templates, the class in inc/,
+#                              htu21df/, lps35hw/, lsm303dlhc/, mmc56x3/,
+#                              mpl3115a2/, PM25/, sht31/, si7021/: class
+#                              templates, the class in inc/,
 #                              its member definitions in src/*.tpp, each
 #                              with a host test
 #
@@ -161,6 +162,6 @@ target_link_libraries(pbmp280_driver PUBLIC bmp280_driver)
 # One folder each, with its own CMakeLists.txt defining <name>_sensor.
 foreach(sensor_dir
         aht20 bme280 bmp280 DS18B20 HMC6352 htu21df
-        lps35hw mpl3115a2 PM25 sht31 si7021)
+        lps35hw lsm303dlhc mmc56x3 mpl3115a2 PM25 sht31 si7021)
     add_subdirectory(${sensor_dir})
 endforeach()

@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(safe_transport LANGUAGES CXX)
 
 # safeTransport: the Safe interface, safety devices and zones, CIP
-# Safety codecs, PLC tags, events, and the STM32 safety relays.
+# Safety codecs, events, and the STM32 safety relays. The PLC tag
+# database and CIP tag server are in ../PLCTransport.
 #
 # The transports (iTransport.h, Stm32HalUartTransport, ...) are no
 # longer copied into this folder. They come from
@@ -19,7 +20,6 @@ project(safe_transport LANGUAGES CXX)
 #                             main.h (STM32)
 #   FREERTOS_INCLUDE_DIRS     FreeRTOS include/ and portable/ folders,
 #                             and FreeRTOSConfig.h's folder (STM32)
-#   LWIP_INCLUDE_DIRS         lwIP include folders (STM32)
 #
 # Host build of everything that needs no hardware:
 #   cmake -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF
@@ -59,7 +59,6 @@ add_library(safety_core STATIC
     SafetyProtocolCodec.h
     CipSafetyCodec.h
     CipSafetyBaseFormatCrc.h
-    CipFrame.h
     Crc8.h
     CrcS3.h
 )
@@ -88,23 +87,6 @@ add_library(safety_transport STATIC
 
 target_link_libraries(safety_transport PUBLIC safety_core sensor_transport)
 
-# --- plc_tags ------------------------------------------------------------
-# PLC tag registry and the CIP tag message codec. PlcMutex uses
-# std::mutex unless PLC_MUTEX_USE_CMSIS_RTOS2 is defined (STM32, whose
-# toolchain has no std::mutex — see PlcMutex.h).
-add_library(plc_tags STATIC
-    PlcDataType.h
-    PlcMutex.h
-    PlcTagDescriptor.h
-    PlcTagRegistry.h
-    CipTagMessageCodec.h
-    CipTagMessageCodec.cpp
-)
-
-target_include_directories(plc_tags PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_compile_features(plc_tags PUBLIC cxx_std_17)
-
 # --- safezone_json -------------------------------------------------------
 # Saves and loads SafeZones as JSON. Built only where nlohmann/json is
 # installed.
@@ -124,8 +106,6 @@ if(SENSOR_FW_HARDWARE STREQUAL "STM32")
 
     set(FREERTOS_INCLUDE_DIRS "" CACHE STRING
         "FreeRTOS include folders: Source/include, the portable/ port folder, and FreeRTOSConfig.h's folder")
-    set(LWIP_INCLUDE_DIRS "" CACHE STRING
-        "lwIP include folders: src/include, system, and the project's LWIP/App and LWIP/Target")
 
     # The STM32 code reaches the HAL, CMSIS-RTOS2 and the project's
     # main.h through the include folders Stm32TransportLibrary already
@@ -134,12 +114,6 @@ if(SENSOR_FW_HARDWARE STREQUAL "STM32")
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${FREERTOS_INCLUDE_DIRS}
     )
-
-    # No std::mutex on this toolchain: PlcMutex uses CMSIS-RTOS2. Set on
-    # plc_tags itself, so every file that sees PlcTagRegistry agrees on
-    # which mutex it holds.
-    target_compile_definitions(plc_tags PUBLIC PLC_MUTEX_USE_CMSIS_RTOS2)
-    target_include_directories(plc_tags PUBLIC ${CMSIS_RTOS_INCLUDE_DIR})
 
     # --- stm32_safety ------------------------------------------------------
     # GPIO safety I/O, the UART safety transport, the CAN safety
@@ -177,20 +151,6 @@ if(SENSOR_FW_HARDWARE STREQUAL "STM32")
     target_include_directories(stm32_can_transport PUBLIC ${SAFETRANSPORT_STM32_INCLUDES})
 
     target_link_libraries(stm32_can_transport PUBLIC safety_transport Stm32TransportLibrary)
-
-    # --- cip_tag_server ----------------------------------------------------
-    # The CIP tag TCP server, on lwIP and FreeRTOS.
-    add_library(cip_tag_server STATIC
-        CipTagTcpServer.h
-        CipTagTcpServer.cpp
-    )
-
-    target_include_directories(cip_tag_server PUBLIC
-        ${SAFETRANSPORT_STM32_INCLUDES}
-        ${LWIP_INCLUDE_DIRS}
-    )
-
-    target_link_libraries(cip_tag_server PUBLIC plc_tags Stm32TransportLibrary)
 
     # --- Application sources -----------------------------------------------
     # HAL callbacks and the STM32F207ZG_SafeRelay wiring. Like

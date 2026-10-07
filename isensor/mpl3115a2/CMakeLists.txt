@@ -3,8 +3,8 @@
 #   src/mpl3115a2.tpp  its member definitions, included by inc/mpl3115a2.h
 #   inc/xmpl3115a2.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(mpl3115a2_sensor INTERFACE)
 
 target_include_directories(mpl3115a2_sensor INTERFACE

@@ -3,8 +3,8 @@
 #   src/HTU21DF.tpp  its member definitions, included by inc/HTU21DF.h
 #   inc/xHTU21DF.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(htu21df_sensor INTERFACE)
 
 target_include_directories(htu21df_sensor INTERFACE

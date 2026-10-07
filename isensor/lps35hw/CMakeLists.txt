@@ -3,8 +3,8 @@
 #   src/lps35hw.tpp  its member definitions, included by inc/lps35hw.h
 #   inc/xlps35hw.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(lps35hw_sensor INTERFACE)
 
 target_include_directories(lps35hw_sensor INTERFACE

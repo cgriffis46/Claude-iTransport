@@ -3,8 +3,8 @@
 #   src/DS18B20.tpp  its member definitions, included by inc/DS18B20.h
 #   inc/xDS18B20.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(ds18b20_sensor INTERFACE)
 
 target_include_directories(ds18b20_sensor INTERFACE

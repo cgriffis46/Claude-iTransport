@@ -7,15 +7,12 @@ project(sensor_transport LANGUAGES CXX)
 #   <module>/hw/<platform>/{inc,src}    stm32, freertos, arduino, linux
 #
 #   itransport/   transport interfaces and bus implementations
-#   isensor/      SensorBase, BMP280 and their RTOS/POSIX variants,
-#                 and SensorStateMachine
-#   aht20/, bme280/, bmp280/, DS18B20/, HMC6352/, htu21df/, lps35hw/,
-#   mpl3115a2/, PM25/, sht31/, si7021/
-#                 sensor drivers (class templates: the class in inc/,
-#                 its member definitions in src/*.tpp), each with a host test
+#
+# The sensors live in the isensor/ folder at the top of the repository,
+# a project of its own that builds itransport from here.
 #
 # Each folder has its own CMakeLists.txt holding its targets; this file
-# only chooses the options and adds the folders in dependency order.
+# only chooses the options and adds the folders.
 # Sources use flat #include "Foo.h" -- each target's
 # target_include_directories() is what puts the right inc/ folders on
 # the include path. Static libraries are written to their module's
@@ -42,10 +39,3 @@ if(SENSOR_FW_BUILD_TESTS)
 endif()
 
 add_subdirectory(itransport)
-add_subdirectory(isensor)
-
-foreach(sensor_dir
-        aht20 bme280 bmp280 DS18B20 HMC6352 htu21df
-        lps35hw mpl3115a2 PM25 sht31 si7021)
-    add_subdirectory(${sensor_dir})
-endforeach()

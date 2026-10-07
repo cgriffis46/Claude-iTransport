@@ -3,8 +3,8 @@
 #   src/hmc6352.tpp  its member definitions, included by inc/hmc6352.h
 #   inc/xhmc6352.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(hmc6352_sensor INTERFACE)
 
 target_include_directories(hmc6352_sensor INTERFACE

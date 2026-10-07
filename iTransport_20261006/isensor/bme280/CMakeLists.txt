@@ -3,8 +3,8 @@
 #   src/BME280.tpp  its member definitions, included by inc/BME280.h
 #   inc/xBME280.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(bme280_sensor INTERFACE)
 
 target_include_directories(bme280_sensor INTERFACE

@@ -8,11 +8,11 @@ project(sensor_transport LANGUAGES CXX)
 #
 #   itransport/   transport interfaces and bus implementations
 #   isensor/      SensorBase, BMP280 and their RTOS/POSIX variants,
-#                 and SensorStateMachine
-#   aht20/, bme280/, bmp280/, DS18B20/, HMC6352/, htu21df/, lps35hw/,
-#   mpl3115a2/, PM25/, sht31/, si7021/
-#                 sensor drivers (class templates: the class in inc/,
-#                 its member definitions in src/*.tpp), each with a host test
+#                 SensorStateMachine, and one folder per sensor driver:
+#     aht20/, bme280/, bmp280/, DS18B20/, HMC6352/, htu21df/, lps35hw/,
+#     mpl3115a2/, PM25/, sht31/, si7021/
+#                 class templates: the class in inc/, its member
+#                 definitions in src/*.tpp, each with a host test
 #
 # Each folder has its own CMakeLists.txt holding its targets; this file
 # only chooses the options and adds the folders in dependency order.
@@ -43,9 +43,3 @@ endif()
 
 add_subdirectory(itransport)
 add_subdirectory(isensor)
-
-foreach(sensor_dir
-        aht20 bme280 bmp280 DS18B20 HMC6352 htu21df
-        lps35hw mpl3115a2 PM25 sht31 si7021)
-    add_subdirectory(${sensor_dir})
-endforeach()

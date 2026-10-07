@@ -1,5 +1,6 @@
-# isensor: SensorBase, BMP280 and their RTOS/POSIX variants, and the
-# SensorStateMachine every sensor driver folder builds on.
+# isensor: SensorBase, BMP280 and their RTOS/POSIX variants, the
+# SensorStateMachine every sensor driver builds on, and the drivers
+# themselves, one folder each (added at the end of this file).
 #
 # Needs itransport's sensor_transport target, so add_subdirectory()
 # itransport before this folder.
@@ -8,8 +9,8 @@
 set(ISENSOR_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 
 # --- sensor_state_machine ------------------------------------------------
-# Header-only. Every driver in the sensor folders (aht20/, bme280/, ...)
-# links this rather than naming isensor/inc itself.
+# Header-only. Every driver in the sensor folders below (aht20/,
+# bme280/, ...) links this rather than naming isensor/inc itself.
 add_library(sensor_state_machine INTERFACE)
 
 target_include_directories(sensor_state_machine INTERFACE
@@ -120,3 +121,11 @@ find_package(Threads REQUIRED)
 target_link_libraries(pbmp280_driver PUBLIC Threads::Threads)
 
 target_link_libraries(pbmp280_driver PUBLIC bmp280_driver)
+
+# --- Sensor drivers --------------------------------------------------------
+# One folder each, with its own CMakeLists.txt defining <name>_sensor.
+foreach(sensor_dir
+        aht20 bme280 bmp280 DS18B20 HMC6352 htu21df
+        lps35hw mpl3115a2 PM25 sht31 si7021)
+    add_subdirectory(${sensor_dir})
+endforeach()

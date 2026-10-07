@@ -3,8 +3,8 @@
 #   src/bmp280.tpp  its member definitions, included by inc/bmp280.h
 #   inc/xbmp280.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(bmp280_sensor INTERFACE)
 
 target_include_directories(bmp280_sensor INTERFACE

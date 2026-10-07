@@ -3,8 +3,8 @@
 #   src/AHT20.tpp  its member definitions, included by inc/AHT20.h
 #   inc/xAHT20.h  the same driver in its own CMSIS-RTOS2 task
 #
-# Needs itransport's sensor_transport and isensor's
-# sensor_state_machine, so add_subdirectory() those first.
+# Added by isensor/CMakeLists.txt. Needs itransport's sensor_transport
+# and isensor's sensor_state_machine.
 add_library(aht20_sensor INTERFACE)
 
 target_include_directories(aht20_sensor INTERFACE

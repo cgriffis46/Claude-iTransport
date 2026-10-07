@@ -1,0 +1,2 @@
+# Static libraries the build writes into each module's lib/ folder
+*/lib/

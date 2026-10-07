@@ -1,291 +1,223 @@
 cmake_minimum_required(VERSION 3.16)
-project(sensor_transport LANGUAGES CXX)
+project(safe_transport LANGUAGES CXX)
 
-# --- Hardware platform selection ----------------------------------------
-# Selects which concrete transport implementation gets built:
-#   STM32    -> Stm32HalI2CTransport, Stm32HalSPITransport, Stm32I2CItCallbacks
-#               (real CMSIS-RTOS2 mutex + notification, via FreeRtosI2CTransport)
-#   ARDUINO  -> ArduinoWireTransport, for ANY Arduino-API target — including
-#               a plain AVR Uno/Mega/Nano with no RTOS at all. Derives from
-#               I2CTransport directly, not FreeRtosI2CTransport; its
-#               busy-wait/delay(1) fallback is what makes that possible.
+# safeTransport: the Safe interface, safety devices and zones, CIP
+# Safety codecs, PLC tags, events, and the STM32 safety relays.
 #
-#   cmake -B build -DSENSOR_FW_HARDWARE=ARDUINO ...
+# The transports (iTransport.h, Stm32HalUartTransport, ...) are no
+# longer copied into this folder. They come from
+# iTransport_20261006/itransport, whose own CMakeLists.txt is added
+# below; its targets put the right inc/ folders on the include path,
+# so sources here keep their flat #include "iTransport.h".
 #
-# Every hardware-specific source file carries its platform in the
-# filename (Stm32*, Arduino*) precisely so it's obvious at a glance
-# which files this flag controls and which (ISensorTransport.h,
-# I2CTransport, SPITransport, SensorBase, BMP280Sensor) are shared.
-set(SENSOR_FW_HARDWARE "STM32" CACHE STRING
-    "Target hardware platform for the transport implementation: STM32 or ARDUINO")
-set_property(CACHE SENSOR_FW_HARDWARE PROPERTY STRINGS STM32 ARDUINO)
+# Options:
+#   SENSOR_FW_HARDWARE        STM32 (default) or HOST, passed on to
+#                             itransport (see its CMakeLists.txt)
+#   CMSIS_RTOS_INCLUDE_DIR    directory holding cmsis_os2.h (STM32)
+#   STM32_HAL_INCLUDE_DIR     directory holding the HAL headers (STM32)
+#   STM32_PROJECT_INCLUDE_DIR the CubeMX project's Core/Inc, holding
+#                             main.h (STM32)
+#   FREERTOS_INCLUDE_DIRS     FreeRTOS include/ and portable/ folders,
+#                             and FreeRTOSConfig.h's folder (STM32)
+#   LWIP_INCLUDE_DIRS         lwIP include folders (STM32)
+#
+# Host build of everything that needs no hardware:
+#   cmake -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF
+#   cmake --build build
 
-if(NOT SENSOR_FW_HARDWARE STREQUAL "STM32" AND NOT SENSOR_FW_HARDWARE STREQUAL "ARDUINO")
-    message(FATAL_ERROR
-        "SENSOR_FW_HARDWARE is '${SENSOR_FW_HARDWARE}' — expected STM32 or ARDUINO.\n"
-        "  cmake -B build -DSENSOR_FW_HARDWARE=STM32 ...\n"
-        "  cmake -B build -DSENSOR_FW_HARDWARE=ARDUINO ...")
-endif()
+set(ITRANSPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../iTransport_20261006/itransport
+    CACHE PATH "The itransport folder to build against")
 
-# --- CMSIS-RTOS2 header ----------------------------------------------
-# Required unconditionally, but NOT because of sensor_transport or
-# bmp280_driver — neither has any RTOS dependency at all now (see
-# I2CTransport.h's own comment, and BMP280Sensor's sleep()/startThread(),
-# both left at genuinely RTOS-free defaults). This is declared here
-# because xbmp280_driver's xBMP280 directly calls osDelay()/osThreadNew(),
-# and Stm32TransportLibrary's FreeRtosI2CTransport calls osMutexAcquire()/
-# osThreadFlagsWait() — both real RTOS dependencies, just scoped to
-# those specific libraries rather than the whole build.
-set(CMSIS_RTOS_INCLUDE_DIR "" CACHE PATH "Directory containing cmsis_os2.h")
-if(CMSIS_RTOS_INCLUDE_DIR STREQUAL "")
-    message(FATAL_ERROR
-        "CMSIS_RTOS_INCLUDE_DIR is not set. Point it at the directory "
-        "containing cmsis_os2.h, e.g.:\n"
-        "  cmake -B build -DCMSIS_RTOS_INCLUDE_DIR=/path/to/Middlewares/.../CMSIS_RTOS_V2 ...\n"
-        "(Needed by xbmp280_driver's xBMP280, and by Stm32TransportLibrary's\n"
-        " FreeRtosI2CTransport — NOT by sensor_transport or bmp280_driver\n"
-        " themselves, neither of which has any RTOS dependency anymore.)")
-endif()
+# A Raspberry Pi transport has no use here.
+set(ITRANSPORT_BUILD_WIRINGPI OFF CACHE BOOL "Build WiringPiTransportLibrary")
 
-# --- sensor_transport ----------------------------------------------------
-# I2CTransport/SPITransport are now fully hardware- AND platform-agnostic:
-# no STM32 types, no RTOS header, nothing. Every real primitive
-# (mutex acquire/release, transfer-completion wait) is a virtual hook
-# with a working, if less efficient, default — see I2CTransport.h.
-add_library(sensor_transport STATIC
-    ISensorTransport.h
-    I2CTransport.h
-    I2CTransport.cpp
-    SPITransport.h
-    SPITransport.cpp
+add_subdirectory(${ITRANSPORT_DIR} itransport)
+
+# --- safe_event ----------------------------------------------------------
+# Event and EventQueue. Header-only.
+add_library(safe_event INTERFACE)
+
+target_include_directories(safe_event INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_compile_features(safe_event INTERFACE cxx_std_17)
+
+# --- safety_core ---------------------------------------------------------
+# The Safe interface, SafeDevice, SafeZone, and the CIP Safety codecs
+# and CRCs. Plain C++: no transport, HAL or RTOS.
+add_library(safety_core STATIC
+    Safe.h
+    SafeInput.h
+    SafeOutput.h
+    SafeInterlock.h
+    SafeDevice.h
+    SafeDevice.cpp
+    SafeZone.h
+    SafeZone.cpp
+    SafeZoneMember.h
+    SafeToEventBridge.h
+    LightCurtain.h
+    SafetyProtocolCodec.h
+    CipSafetyCodec.h
+    CipSafetyBaseFormatCrc.h
+    CipFrame.h
+    Crc8.h
+    CrcS3.h
 )
 
-target_include_directories(sensor_transport PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
+target_include_directories(safety_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_compile_features(safety_core PUBLIC cxx_std_17)
+
+target_link_libraries(safety_core PUBLIC safe_event)
+
+# --- safety_transport ----------------------------------------------------
+# Safe inputs and outputs carried over an iTransport, and the UART
+# loopback check. Only the iTransport interface is needed, so this
+# links sensor_transport, not a hardware library.
+add_library(safety_transport STATIC
+    SafeTransport.h
+    TransportSafeInput.h
+    TransportSafeOutput.h
+    UartLoopbackSafe.h
+    UartLoopbackSafe.cpp
+    UartLoopbackChannelSafeInput.h
+    UartLoopbackChannelSafeInput.cpp
+    iTransportCan.h
+    iTransportEthernet.h
 )
 
-target_compile_features(sensor_transport PUBLIC cxx_std_17)
+target_link_libraries(safety_transport PUBLIC safety_core sensor_transport)
 
-# --- Hardware transport library -----------------------------------------
-# Exactly one of these two blocks runs, based on SENSOR_FW_HARDWARE.
-# Either way, HARDWARE_TRANSPORT_LIBRARY ends up set to whichever
-# target was actually built, so anything further down (or a top-level
-# project) can write target_link_libraries(app PUBLIC
-# ${HARDWARE_TRANSPORT_LIBRARY}) without caring which hardware it is.
+# --- plc_tags ------------------------------------------------------------
+# PLC tag registry and the CIP tag message codec. PlcMutex uses
+# std::mutex unless PLC_MUTEX_USE_CMSIS_RTOS2 is defined (STM32, whose
+# toolchain has no std::mutex — see PlcMutex.h).
+add_library(plc_tags STATIC
+    PlcDataType.h
+    PlcMutex.h
+    PlcTagDescriptor.h
+    PlcTagRegistry.h
+    CipTagMessageCodec.h
+    CipTagMessageCodec.cpp
+)
+
+target_include_directories(plc_tags PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_compile_features(plc_tags PUBLIC cxx_std_17)
+
+# --- safezone_json -------------------------------------------------------
+# Saves and loads SafeZones as JSON. Built only where nlohmann/json is
+# installed.
+find_package(nlohmann_json QUIET)
+if(nlohmann_json_FOUND)
+    add_library(safezone_json STATIC
+        SafeZoneJsonPersistence.h
+        SafeZoneJsonPersistence.cpp
+    )
+
+    target_link_libraries(safezone_json PUBLIC safety_core PRIVATE nlohmann_json::nlohmann_json)
+else()
+    message(STATUS "nlohmann_json not found: safezone_json is not built")
+endif()
+
 if(SENSOR_FW_HARDWARE STREQUAL "STM32")
 
-    # stm32f4xx_hal.h now lives entirely inside Stm32HalI2CTransport.h/
-    # Stm32HalSPITransport.h/Stm32I2CItCallbacks.cpp — sensor_transport
-    # itself never needs it. This is the only place STM32_HAL_INCLUDE_DIR
-    # is required.
-    set(STM32_HAL_INCLUDE_DIR "" CACHE PATH "Directory containing stm32f4xx_hal.h (or your STM32 family's HAL header)")
-    if(STM32_HAL_INCLUDE_DIR STREQUAL "")
-        message(FATAL_ERROR
-            "STM32_HAL_INCLUDE_DIR is not set. Point it at the directory "
-            "containing stm32f4xx_hal.h, e.g.:\n"
-            "  cmake -B build -DSENSOR_FW_HARDWARE=STM32 -DSTM32_HAL_INCLUDE_DIR=/path/to/Drivers/STM32F4xx_HAL_Driver/Inc ...")
-    endif()
+    set(FREERTOS_INCLUDE_DIRS "" CACHE STRING
+        "FreeRTOS include folders: Source/include, the portable/ port folder, and FreeRTOSConfig.h's folder")
+    set(LWIP_INCLUDE_DIRS "" CACHE STRING
+        "lwIP include folders: src/include, system, and the project's LWIP/App and LWIP/Target")
 
-    # FreeRtosI2CTransport supplies the real osMutexAcquire()/
-    # osMutexRelease()/osThreadFlagsSet()/osThreadFlagsWait() calls that
-    # I2CTransport's default hooks are RTOS-free fallbacks for.
-    # Stm32HalI2CTransport derives from it (not I2CTransport directly)
-    # to get real cross-task exclusion and a real notification wait,
-    # rather than the busy-wait/no-op defaults. Needs CMSIS_RTOS_INCLUDE_DIR
-    # (declared unconditionally above) on top of STM32_HAL_INCLUDE_DIR.
-    #
-    # Stm32HalI2CTransport/Stm32HalSPITransport are the only classes in
-    # this codebase that call HAL_I2C_*/HAL_SPI_* functions directly —
-    # everything generic lives in I2CTransport/SPITransport, which this
-    # links against. Stm32I2CItCallbacks.cpp is the HAL ISR callback
-    # glue (HAL_I2C_MemTxCpltCallback etc.) that feeds
-    # I2CTransport::onTransferComplete() — bundled here since it only
-    # makes sense alongside Stm32HalI2CTransport.
-    add_library(Stm32TransportLibrary STATIC
-        FreeRtosI2CTransport.h
-        FreeRtosI2CTransport.cpp
-        Stm32HalI2CTransport.h
-        Stm32HalI2CTransport.cpp
-        Stm32HalSPITransport.h
-        Stm32HalSPITransport.cpp
-        Stm32I2CItCallbacks.cpp
-        iTransport.h
-        Stm32HalUartTransport.h
-        Stm32HalUartTransport.cpp
-        Stm32UartItCallbacks.cpp
-    )
-
-    target_include_directories(Stm32TransportLibrary PUBLIC
+    # The STM32 code reaches the HAL, CMSIS-RTOS2 and the project's
+    # main.h through the include folders Stm32TransportLibrary already
+    # carries, plus these.
+    set(SAFETRANSPORT_STM32_INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${STM32_HAL_INCLUDE_DIR}
-        ${CMSIS_RTOS_INCLUDE_DIR}
+        ${FREERTOS_INCLUDE_DIRS}
     )
 
-    target_compile_features(Stm32TransportLibrary PUBLIC cxx_std_17)
+    # No std::mutex on this toolchain: PlcMutex uses CMSIS-RTOS2. Set on
+    # plc_tags itself, so every file that sees PlcTagRegistry agrees on
+    # which mutex it holds.
+    target_compile_definitions(plc_tags PUBLIC PLC_MUTEX_USE_CMSIS_RTOS2)
+    target_include_directories(plc_tags PUBLIC ${CMSIS_RTOS_INCLUDE_DIR})
 
-    target_link_libraries(Stm32TransportLibrary PUBLIC sensor_transport)
-
-    set(HARDWARE_TRANSPORT_LIBRARY Stm32TransportLibrary)
-
-elseif(SENSOR_FW_HARDWARE STREQUAL "ARDUINO")
-
-    # ArduinoWireTransport.h #includes <Arduino.h> and <Wire.h> directly
-    # — that's the Arduino core, not part of this repo. NOT included:
-    # cmsis_os2.h — this transport derives from I2CTransport directly,
-    # not FreeRtosI2CTransport, so it needs no RTOS at all, working on
-    # a plain AVR Uno/Mega/Nano as much as on something FreeRTOS-backed.
-    set(ARDUINO_CORE_INCLUDE_DIR "" CACHE PATH "Directory containing Wire.h and the rest of the Arduino core headers")
-    if(ARDUINO_CORE_INCLUDE_DIR STREQUAL "")
-        message(FATAL_ERROR
-            "ARDUINO_CORE_INCLUDE_DIR is not set. Point it at the directory "
-            "containing Wire.h, e.g.:\n"
-            "  cmake -B build -DSENSOR_FW_HARDWARE=ARDUINO -DARDUINO_CORE_INCLUDE_DIR=/path/to/cores/esp32 ...")
-    endif()
-
-    add_library(ArduinoTransportLibrary STATIC
-        ArduinoWireTransport.h
-        ArduinoWireTransport.cpp
+    # --- stm32_safety ------------------------------------------------------
+    # GPIO safety I/O, the UART safety transport, the CAN safety
+    # broadcaster and the safety relays, on the STM32 HAL.
+    add_library(stm32_safety STATIC
+        GpioSafeInput.h
+        GpioSafeInput.cpp
+        GpioSafeOutput.h
+        GpioSafeOutput.cpp
+        Stm32CanSafetyBroadcaster.h
+        Stm32CanSafetyBroadcaster.cpp
+        Stm32SafeUartTransport.h
+        Stm32SafeUartTransport.cpp
+        Stm32_Safe_Relay.h
+        Stm32_Safe_Relay.cpp
+        Stm32L4SafetyRelay.h
+        Stm32L4SafetyRelay.cpp
+        xBNO085.h
+        xBNO085.cpp
     )
 
-    target_include_directories(ArduinoTransportLibrary PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${ARDUINO_CORE_INCLUDE_DIR}
+    target_include_directories(stm32_safety PUBLIC ${SAFETRANSPORT_STM32_INCLUDES})
+
+    target_link_libraries(stm32_safety PUBLIC safety_transport Stm32TransportLibrary)
+
+    # --- stm32_can_transport -----------------------------------------------
+    # iTransportCan on the STM32 HAL CAN driver. Separate from
+    # stm32_safety because it needs a CubeMX project with CAN enabled
+    # (HAL_CAN_MODULE_ENABLED); so does Stm32CanItCallbacks.cpp below.
+    add_library(stm32_can_transport STATIC
+        Stm32HalCanTransport.h
+        Stm32HalCanTransport.cpp
     )
 
-    target_compile_features(ArduinoTransportLibrary PUBLIC cxx_std_17)
+    target_include_directories(stm32_can_transport PUBLIC ${SAFETRANSPORT_STM32_INCLUDES})
 
-    target_link_libraries(ArduinoTransportLibrary PUBLIC sensor_transport)
+    target_link_libraries(stm32_can_transport PUBLIC safety_transport Stm32TransportLibrary)
 
-    set(HARDWARE_TRANSPORT_LIBRARY ArduinoTransportLibrary)
+    # --- cip_tag_server ----------------------------------------------------
+    # The CIP tag TCP server, on lwIP and FreeRTOS.
+    add_library(cip_tag_server STATIC
+        CipTagTcpServer.h
+        CipTagTcpServer.cpp
+    )
+
+    target_include_directories(cip_tag_server PUBLIC
+        ${SAFETRANSPORT_STM32_INCLUDES}
+        ${LWIP_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(cip_tag_server PUBLIC plc_tags Stm32TransportLibrary)
+
+    # --- Application sources -----------------------------------------------
+    # HAL callbacks and the STM32F207ZG_SafeRelay wiring. Like
+    # itransport's *ItCallbacks.cpp, these must be compiled into the
+    # application itself — inside a static library the linker would
+    # keep the HAL's weak defaults instead. An application adds them
+    # with:
+    #   target_sources(app PRIVATE ${SAFETRANSPORT_APP_SOURCES})
+    set(SAFETRANSPORT_APP_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/Stm32CanItCallbacks.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/CipSafeRelayUartLoopback.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/CipSafeRelayWatchdogFeed.cpp
+        ${ITRANSPORT_DIR}/hw/stm32/src/Stm32I2CItCallbacks.cpp
+        ${ITRANSPORT_DIR}/hw/stm32/src/Stm32SpiItCallbacks.cpp
+        ${ITRANSPORT_DIR}/hw/stm32/src/Stm32UartItCallbacks.cpp
+    )
 
 endif()
 
-# --- sensor_base -------------------------------------------------------
-# SensorBase.h/.cpp only need ISensorTransport.h — not the HAL/RTOS
-# headers directly, since it talks to hardware exclusively through the
-# ISensorTransport& it's given, never a concrete transport. Linking
-# against sensor_transport (rather than duplicating an include path)
-# is what actually gets ISensorTransport.h onto sensor_base's include
-# path. Hardware-agnostic: unaffected by SENSOR_FW_HARDWARE.
-add_library(sensor_base STATIC
-    SensorBase.h
-    SensorBase.cpp
-)
+# --- linux_udp_transport -------------------------------------------------
+# iTransportEthernet over a POSIX UDP socket (Linux/KR260).
+if(UNIX AND NOT SENSOR_FW_HARDWARE STREQUAL "STM32")
+    add_library(linux_udp_transport STATIC
+        LinuxUdpTransport.h
+        LinuxUdpTransport.cpp
+    )
 
-target_include_directories(sensor_base PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-target_compile_features(sensor_base PUBLIC cxx_std_17)
-
-target_link_libraries(sensor_base PUBLIC sensor_transport)
-
-# --- WiringPiTransportLibrary --------------------------------------------
-# WiringPiTransport/WiringPiI2cTransport extend ISensorTransport
-# directly, not I2CTransport — WiringPi's calls are all synchronous,
-# so none of I2CTransport's mutex-arbitration/transfer-notification
-# machinery would do anything useful here (see WiringPiTransport.h).
-# Not gated behind SENSOR_FW_HARDWARE: this isn't competing with the
-# STM32/ARDUINO choice above for the same role, it's a separate
-# concrete option a Raspberry Pi project links against directly.
-set(WIRINGPI_INCLUDE_DIR "" CACHE PATH "Directory containing wiringPiI2C.h (and the rest of WiringPi's headers)")
-if(WIRINGPI_INCLUDE_DIR STREQUAL "")
-    message(FATAL_ERROR
-        "WIRINGPI_INCLUDE_DIR is not set. Point it at the directory "
-        "containing wiringPiI2C.h, e.g.:\n"
-        "  cmake -B build -DWIRINGPI_INCLUDE_DIR=/usr/include ...")
+    find_package(Threads REQUIRED)
+    target_link_libraries(linux_udp_transport PUBLIC safety_transport Threads::Threads)
 endif()
-
-add_library(WiringPiTransportLibrary STATIC
-    IFileTransport.h
-    IFileTransport.cpp
-    WiringPiTransport.h
-    WiringPiI2cTransport.h
-    WiringPiI2cTransport.cpp
-)
-
-target_include_directories(WiringPiTransportLibrary PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${WIRINGPI_INCLUDE_DIR}
-)
-
-target_compile_features(WiringPiTransportLibrary PUBLIC cxx_std_17)
-
-# sem_wait()/sem_post() (IFileTransport) live in libpthread on older
-# glibc versions — merged into libc directly on 2.34+, but not
-# guaranteed on every target. find_package(Threads) + Threads::Threads
-# is the portable way to get whichever is actually needed.
-find_package(Threads REQUIRED)
-target_link_libraries(WiringPiTransportLibrary PUBLIC Threads::Threads)
-
-target_link_libraries(WiringPiTransportLibrary PUBLIC sensor_transport)
-
-# --- bmp280_driver -------------------------------------------------------
-# BMP280Sensor.h only needs SensorBase.h. No RTOS dependency anywhere
-# in this library anymore: sleep()/startThread() are left at
-# SensorBase's genuinely RTOS-free defaults (see BMP280Sensor.h's own
-# comment) — this only makes forward progress when something calls
-# main() repeatedly, i.e. the user's own loop(). Note this does NOT
-# link HARDWARE_TRANSPORT_LIBRARY — BMP280Sensor only ever references
-# ISensorTransport&, never a concrete transport type, so that link
-# happens at the application level, not here.
-add_library(bmp280_driver STATIC
-    BMP280Sensor.h
-    BMP280Sensor.cpp
-    Barometer.h
-    Altimeter.h
-    Thermometer.h
-)
-
-target_include_directories(bmp280_driver PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-target_compile_features(bmp280_driver PUBLIC cxx_std_17)
-
-target_link_libraries(bmp280_driver PUBLIC sensor_base)
-
-# --- xbmp280_driver --------------------------------------------------------
-# xBMP280 extends BMP280Sensor, overriding only sleep()/startThread()
-# with real osDelay()/osThreadNew() calls — everything else (the state
-# machine itself) is inherited unchanged. Build this in addition to
-# bmp280_driver when a real RTOS is available and you want xBMP280 to
-# run in its own dedicated task rather than needing a manual loop().
-add_library(xbmp280_driver STATIC
-    xBMP280.h
-    xBMP280.cpp
-    xSensorBase.h
-)
-
-target_include_directories(xbmp280_driver PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMSIS_RTOS_INCLUDE_DIR}
-)
-
-target_compile_features(xbmp280_driver PUBLIC cxx_std_17)
-
-target_link_libraries(xbmp280_driver PUBLIC bmp280_driver)
-
-# --- pbmp280_driver --------------------------------------------------------
-# pBMP280 extends BMP280Sensor, overriding sleep()/startThread()/
-# StopThread() with real POSIX pthread_create()/nanosleep() calls —
-# everything else (the state machine itself) is inherited unchanged.
-# No CMSIS-RTOS dependency at all here: this is genuinely just POSIX
-# (pthread, nanosleep, std::atomic), needing only Threads::Threads to
-# link — unlike xbmp280_driver, this never needs CMSIS_RTOS_INCLUDE_DIR.
-add_library(pbmp280_driver STATIC
-    pBMP280.h
-    pBMP280.cpp
-    pSensorBase.h
-)
-
-target_include_directories(pbmp280_driver PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-target_compile_features(pbmp280_driver PUBLIC cxx_std_17)
-
-find_package(Threads REQUIRED)
-target_link_libraries(pbmp280_driver PUBLIC Threads::Threads)
-
-target_link_libraries(pbmp280_driver PUBLIC bmp280_driver)

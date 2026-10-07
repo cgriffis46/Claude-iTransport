@@ -1,4 +1,4 @@
-# inet: network interfaces built on itransport.
+# iNetTransport: network interfaces built on itransport.
 #
 #   inc/                     NetTypes.h, iNetDevice.h: the seam between a
 #                            chip driver and the interface on it. No RTOS.
@@ -30,7 +30,7 @@
 # xnet is built too. The other options are itransport's.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.16)
-    project(inet LANGUAGES CXX)
+    project(iNetTransport LANGUAGES CXX)
 
     option(SENSOR_FW_BUILD_TESTS "Build the host tests (no hardware, HAL or RTOS needed)" OFF)
     if(SENSOR_FW_BUILD_TESTS)
@@ -45,7 +45,7 @@ if(NOT TARGET sensor_transport)
     add_subdirectory(${ITRANSPORT_DIR} itransport)
 endif()
 
-# Static libraries are written to inet/lib rather than the build tree.
+# Static libraries are written to iNetTransport/lib rather than the build tree.
 set(INET_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 
 # --- inet_core -----------------------------------------------------------

@@ -289,7 +289,7 @@ void statsLine(uint32_t upMs) {
 
 void bringupThread(void *) {
 	log_printf("%s", "");
-	log_printf("=== iTransport inet bring-up: NUCLEO-L432KC ===");
+	log_printf("=== iNetTransport bring-up: NUCLEO-L432KC ===");
 	log_printf("SYSCLK %lu MHz, LSE %s, reset cause: %s", static_cast<unsigned long>(HAL_RCC_GetSysClockFreq() / 1000000),
 	           board_lse_ok() ? "running (MSI trimmed)" : "not running (MSI untrimmed)", board_reset_cause());
 	log_printf("building: Ethernet (W5500) %s, Wi-Fi (ESP-AT) %s", BRINGUP_ETH ? "yes" : "no", BRINGUP_WIFI ? "yes" : "no");

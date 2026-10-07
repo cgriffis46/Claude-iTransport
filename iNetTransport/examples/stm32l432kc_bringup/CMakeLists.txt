@@ -1,4 +1,4 @@
-# Bring-up firmware for the inet drivers on a NUCLEO-L432KC: W5500
+# Bring-up firmware for the iNetTransport drivers on a NUCLEO-L432KC: W5500
 # Ethernet on SPI1 and/or an ESP-AT Wi-Fi module on USART1. Standalone:
 # it needs the GNU Arm toolchain and ST's STM32CubeL4 firmware package
 # (which CubeIDE/CubeMX download to ~/STM32Cube/Repository), no CubeMX
@@ -47,7 +47,7 @@ set(ESP_BAUD 115200 CACHE STRING "ESP-AT module's UART baud rate")
 
 set(REPO ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
 set(IT ${REPO}/iTransport/itransport)
-set(INET ${REPO}/inet)
+set(INET ${REPO}/iNetTransport)
 
 set(CPU_FLAGS -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard)
 

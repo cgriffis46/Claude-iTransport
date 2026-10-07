@@ -1,4 +1,4 @@
-# inet
+# iNetTransport
 
 Network interfaces on top of itransport: `xEthernet`, `xWifi` and `xClient`
 for FreeRTOS, with two chip drivers underneath. One is the WIZnet W5500
@@ -168,7 +168,7 @@ throughput. See `examples/stm32l432kc_bringup/BRINGUP.md`.
 On a PC, with no hardware, HAL or RTOS:
 
 ```
-cmake -S inet -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON
+cmake -S iNetTransport -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON
 cmake --build build && ctest --test-dir build
 ```
 

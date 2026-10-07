@@ -27,12 +27,12 @@
  *  unconfigured, or open the bridges (see UM1956).
  *
  *  Include paths: itransport/inc, itransport/hw/stm32/inc,
- *  itransport/hw/freertos/inc, inet/inc, inet/hw/freertos/inc,
- *  inet/w5500/inc. Sources: itransport/src/{BusTransport,
+ *  itransport/hw/freertos/inc, iNetTransport/inc, iNetTransport/hw/freertos/inc,
+ *  iNetTransport/w5500/inc. Sources: itransport/src/{BusTransport,
  *  SpiBlockTransport}.cpp, itransport/hw/stm32/src/{
  *  Stm32HalSpiBlockTransport,Stm32SpiItCallbacks}.cpp,
- *  inet/hw/freertos/src/{xNetInterface,xClient}.cpp,
- *  inet/dhcp/src/DhcpClient.cpp; include path inet/dhcp/inc too.
+ *  iNetTransport/hw/freertos/src/{xNetInterface,xClient}.cpp,
+ *  iNetTransport/dhcp/src/DhcpClient.cpp; include path iNetTransport/dhcp/inc too.
  */
 
 #include "main.h"

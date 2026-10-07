@@ -1,5 +1,5 @@
 /*
- * main.cpp — bring-up firmware for the inet drivers on a NUCLEO-L432KC.
+ * main.cpp — bring-up firmware for the iNetTransport drivers on a NUCLEO-L432KC.
  * See BRINGUP.md for wiring, building, flashing and reading the log.
  */
 

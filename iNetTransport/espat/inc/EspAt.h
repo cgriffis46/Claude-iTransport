@@ -13,7 +13,7 @@
  *      ESPAT::espat<Stm32HalUartTransport> esp(param, &huart1);
  *      xWifi wifi(esp);
  *
- *  It is an iWifiDevice (inet/inc/iNetDevice.h): hand it to an xWifi.
+ *  It is an iWifiDevice (iNetTransport/inc/iNetDevice.h): hand it to an xWifi.
  *  The module does TCP and DHCP itself; this driver speaks AT to it.
  *
  *  How it talks to the module:

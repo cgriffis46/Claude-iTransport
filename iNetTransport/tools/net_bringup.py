@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""PC side of the inet bring-up: exercises the board's test services.
+"""PC side of the iNetTransport bring-up: exercises the board's test services.
 
-The bring-up firmware (inet/examples/stm32l432kc_bringup) serves
+The bring-up firmware (iNetTransport/examples/stm32l432kc_bringup) serves
   echo    TCP 7   everything sent comes back
   discard TCP 9   everything sent is dropped
   chargen TCP 19  a known pattern, until we close

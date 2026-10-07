@@ -1,6 +1,6 @@
 /*
  * services.h — the classic test services, on any xNetInterface, for the
- * PC-side bring-up script (inet/tools/net_bringup.py):
+ * PC-side bring-up script (iNetTransport/tools/net_bringup.py):
  *
  *   echo     port 7   everything received is sent back      (RFC 862)
  *   discard  port 9   everything received is counted, dropped (RFC 863)

@@ -12,7 +12,7 @@
  *  Everything after param goes to the transport's own constructor.
  *  This file includes no HAL and no RTOS header.
  *
- *  It is an iEthernetDevice (inet/inc/iNetDevice.h): hand it to an
+ *  It is an iEthernetDevice (iNetTransport/inc/iNetDevice.h): hand it to an
  *  xEthernet, whose driver thread calls poll() and relays your
  *  threads' connect()/read()/write() to it. It can also be driven
  *  from a bare-metal loop by anything that implements iNetDeviceHost.
@@ -28,7 +28,7 @@
  *  has 8 sockets, each one connection (a listening socket becomes the
  *  connection when a peer arrives). With w5500_param_t::dhcp set (the
  *  default) the last one, socket 7, is kept back for DHCP, which runs
- *  over it in UDP mode (inet/dhcp/DhcpClient), and the interface gets
+ *  over it in UDP mode (iNetTransport/dhcp/DhcpClient), and the interface gets
  *  sockets 0..6.
  */
 

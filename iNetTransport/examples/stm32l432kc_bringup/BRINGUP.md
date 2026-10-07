@@ -3,7 +3,7 @@
 This firmware brings the network hardware up one step at a time. At each
 step it logs what it found, and when a step fails it says what to check.
 Once the hardware is up it starts the test services, and
-`inet/tools/net_bringup.py` drives them from a PC. It needs only the GNU Arm
+`iNetTransport/tools/net_bringup.py` drives them from a PC. It needs only the GNU Arm
 toolchain and ST's STM32CubeL4 package, not a CubeMX project.
 
 > It compiles and links warning-free for the STM32L432KC in every
@@ -64,7 +64,7 @@ blinks fast after a fatal error.
 ## 3. Build and flash
 
 ```sh
-cd inet/examples/stm32l432kc_bringup
+cd iNetTransport/examples/stm32l432kc_bringup
 cmake -S . -B build -DSTM32CUBE_L4_DIR=$HOME/STM32Cube/Repository/STM32Cube_FW_L4_V1.18.1
 cmake --build build
 ```
@@ -96,7 +96,7 @@ Press the board's reset button to see the log from the start. On a good
 board it should look roughly like this (your numbers will differ):
 
 ```
-[    0.012] === iTransport inet bring-up: NUCLEO-L432KC ===
+[    0.012] === iNetTransport bring-up: NUCLEO-L432KC ===
 [    0.013] SYSCLK 80 MHz, LSE running (MSI trimmed), reset cause: reset pin
 [    0.014] building: Ethernet (W5500) yes, Wi-Fi (ESP-AT) no
 [    0.015] [eth] W5500: pulsing RSTn (PA3)
@@ -152,8 +152,8 @@ fourth byte.
 ## 6. Test from the PC
 
 ```sh
-python3 inet/tools/net_bringup.py 192.168.1.77          # the address from the log
-python3 inet/tools/net_bringup.py 192.168.4.20 --wifi   # ESP-AT: echo only
+python3 iNetTransport/tools/net_bringup.py 192.168.1.77          # the address from the log
+python3 iNetTransport/tools/net_bringup.py 192.168.4.20 --wifi   # ESP-AT: echo only
 ```
 
 It runs these tests, and exits 0 only if all of them pass:
@@ -182,5 +182,5 @@ numbers, and the `[stats]` line after the test. For a sense of scale:
 - the HAL timebase on TIM6, leaving SysTick to FreeRTOS
 
 `bringup.cpp` shows how to construct the drivers and interfaces and start
-their threads. `inet/examples/stm32l432kc_w5500/net_app.cpp` is the same
+their threads. `iNetTransport/examples/stm32l432kc_w5500/net_app.cpp` is the same
 code in its smallest form, for a CubeMX project.

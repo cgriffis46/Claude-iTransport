@@ -7,7 +7,7 @@
 // on it (xEthernet, xWifi). Nothing above this knows which chip it
 // is, or what bus the chip is on:
 //
-//   W5500 over SPI          -> iBlockTransport  (inet/w5500)
+//   W5500 over SPI          -> iBlockTransport  (iNetTransport/w5500)
 //   ESP-AT Wi-Fi over UART  -> iTransport        (stream)
 //   ATWINC1500 over SPI     -> iBlockTransport
 //   a PHY on MII/RMII       -> the MCU's own Ethernet MAC + a host

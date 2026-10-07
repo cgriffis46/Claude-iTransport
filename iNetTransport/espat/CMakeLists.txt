@@ -3,7 +3,7 @@
 #   inc/EspAt.h    the class, for any iTransport, driven by poll()
 #   src/EspAt.tpp  its member definitions, included by inc/EspAt.h
 #
-# Added by inet/CMakeLists.txt. Needs itransport's sensor_transport
+# Added by iNetTransport/CMakeLists.txt. Needs itransport's sensor_transport
 # (iTransport) and inet_core (iWifiDevice). The module does its own DHCP.
 add_library(espat_driver INTERFACE)
 
@@ -17,7 +17,7 @@ target_link_libraries(espat_driver INTERFACE sensor_transport inet_core)
 
 # --- Host test -----------------------------------------------------------
 # The state machine alone, on a simulated clock, against the simulated
-# module in inet/test/sim.
+# module in iNetTransport/test/sim.
 if(SENSOR_FW_BUILD_TESTS)
     add_executable(EspAt_test test/EspAt_test.cpp)
     target_include_directories(EspAt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../test/sim)

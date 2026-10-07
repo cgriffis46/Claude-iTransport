@@ -33,7 +33,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     endif()
 endif()
 
-set(ITRANSPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../iTransport_20261006/itransport
+set(ITRANSPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../iTransport/itransport
     CACHE PATH "The itransport folder to build against")
 
 if(NOT TARGET sensor_transport)

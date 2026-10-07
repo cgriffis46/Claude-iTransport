@@ -6,7 +6,7 @@ project(safe_transport LANGUAGES CXX)
 #
 # The transports (iTransport.h, Stm32HalUartTransport, ...) are no
 # longer copied into this folder. They come from
-# iTransport_20261006/itransport, whose own CMakeLists.txt is added
+# iTransport/itransport, whose own CMakeLists.txt is added
 # below; its targets put the right inc/ folders on the include path,
 # so sources here keep their flat #include "iTransport.h".
 #
@@ -25,7 +25,7 @@ project(safe_transport LANGUAGES CXX)
 #   cmake -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF
 #   cmake --build build
 
-set(ITRANSPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../iTransport_20261006/itransport
+set(ITRANSPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../iTransport/itransport
     CACHE PATH "The itransport folder to build against")
 
 # A Raspberry Pi transport has no use here.

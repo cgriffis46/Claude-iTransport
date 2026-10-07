@@ -17,7 +17,8 @@ set(ITRANSPORT_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 
 # --- Hardware platform selection ----------------------------------------
 # Selects which concrete transport implementation gets built:
-#   STM32    -> Stm32HalI2CTransport, Stm32HalSPITransport, and their interrupt callbacks
+#   STM32    -> Stm32HalI2CTransport, Stm32HalSPITransport, Stm32HalSpiBlockTransport,
+#               and their interrupt callbacks
 #               (real CMSIS-RTOS2 mutex + notification, via FreeRtosTransport<TBus>)
 #   ARDUINO  -> ArduinoWireTransport, for ANY Arduino-API target — including
 #               a plain AVR Uno/Mega/Nano with no RTOS at all. Derives from
@@ -66,6 +67,9 @@ add_library(sensor_transport STATIC
     inc/iTransportOneWire.h
     inc/OneWireUartTransport.h
     src/OneWireUartTransport.cpp
+    inc/iBlockTransport.h
+    inc/SpiBlockTransport.h
+    src/SpiBlockTransport.cpp
 )
 
 target_include_directories(sensor_transport PUBLIC
@@ -154,6 +158,8 @@ if(SENSOR_FW_HARDWARE STREQUAL "STM32")
         hw/stm32/src/Stm32HalI2CTransport.cpp
         hw/stm32/inc/Stm32HalSPITransport.h
         hw/stm32/src/Stm32HalSPITransport.cpp
+        hw/stm32/inc/Stm32HalSpiBlockTransport.h
+        hw/stm32/src/Stm32HalSpiBlockTransport.cpp
         hw/stm32/src/Stm32I2CItCallbacks.cpp
         hw/stm32/src/Stm32SpiItCallbacks.cpp
         hw/stm32/inc/Stm32HalOneWireTransport.h
@@ -276,6 +282,14 @@ if(SENSOR_FW_BUILD_TESTS)
     add_executable(onewire_test test/onewire_test.cpp)
     target_link_libraries(onewire_test PRIVATE sensor_transport)
     add_test(NAME onewire_test COMMAND onewire_test)
+
+    add_executable(spi_block_transport_test test/spi_block_transport_test.cpp)
+    target_include_directories(spi_block_transport_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+    )
+    target_link_libraries(spi_block_transport_test PRIVATE sensor_transport)
+    add_test(NAME spi_block_transport_test COMMAND spi_block_transport_test)
 
     add_executable(freertos_transport_test test/freertos_transport_test.cpp)
     target_include_directories(freertos_transport_test PRIVATE

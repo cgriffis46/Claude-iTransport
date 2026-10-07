@@ -8,6 +8,7 @@
 //
 //   FreeRtosTransport<I2CTransport>    FreeRtosTransport<SPITransport>
 //   FreeRtosTransport<OneWireUartTransport>
+//   FreeRtosTransport<SpiBlockTransport>
 //
 //   ObtainMutex()/ReleaseMutex()   -> osMutexAcquire()/osMutexRelease()
 //   SignalTransferComplete()       -> osThreadFlagsSet(), from the bus interrupt
@@ -20,7 +21,7 @@
 //
 // Still abstract — the hal*() hardware calls are left for a
 // further-derived class (Stm32HalI2CTransport, Stm32HalSPITransport,
-// Stm32HalOneWireTransport).
+// Stm32HalOneWireTransport, Stm32HalSpiBlockTransport).
 // A target with no RTOS derives from I2CTransport/SPITransport
 // directly instead and gets BusTransport's polling defaults — see
 // ArduinoWireTransport.
@@ -38,7 +39,7 @@ template <typename TBus>
 class FreeRtosTransport : public TBus {
     static_assert(std::is_base_of<BusTransport, TBus>::value,
                   "FreeRtosTransport<TBus> requires TBus to derive from BusTransport "
-                  "(I2CTransport, SPITransport or OneWireUartTransport).");
+                  "(I2CTransport, SPITransport, SpiBlockTransport or OneWireUartTransport).");
 
 public:
     using TBus::TBus;

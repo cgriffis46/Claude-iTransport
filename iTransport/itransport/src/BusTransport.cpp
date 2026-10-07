@@ -38,12 +38,15 @@ BusTransport::~BusTransport() {
     }
 }
 
-// Finds the instance currently mid-transfer on this bus and signals it.
+// Finds the instance currently mid-transfer on this bus and signals it,
+// or lets it start the next part of a transfer made of several.
 void BusTransport::onTransferComplete(void* busHandle, bool failed) {
     for (size_t i = 0; i < kSlots; ++i) {
         if (s_bus[i].used && s_bus[i].handle == busHandle) {
             BusTransport* active = s_bus[i].active;
-            if (active != nullptr) active->SignalTransferComplete(failed);
+            if (active != nullptr && !active->ContinueTransfer(failed)) {
+                active->SignalTransferComplete(failed);
+            }
             return;
         }
     }

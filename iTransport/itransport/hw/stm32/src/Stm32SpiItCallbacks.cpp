@@ -14,13 +14,19 @@
 // HAL's own weak defaults, and no transfer would ever complete.
 extern "C" {
 
-// After HAL_SPI_Transmit_IT (writeReg/writeRegs/writeBytes).
+// After HAL_SPI_Transmit_IT/_DMA (writeReg/writeRegs/writeBytes, and
+// SpiBlockTransport's header and write data phase).
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef* hspi) {
     BusTransport::onTransferComplete(hspi, /*failed=*/false);
 }
 
 // After HAL_SPI_TransmitReceive_IT (readRegs/readBytes).
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef* hspi) {
+    BusTransport::onTransferComplete(hspi, /*failed=*/false);
+}
+
+// After HAL_SPI_Receive_IT/_DMA (SpiBlockTransport's read data phase).
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef* hspi) {
     BusTransport::onTransferComplete(hspi, /*failed=*/false);
 }
 

@@ -22,7 +22,8 @@
 //   2. the hardware call starts the transfer and returns at once.
 //      endIssue() gives the bus straight back if it didn't start.
 //   3. onTransferComplete(), called from the bus interrupt, finds the
-//      registered instance and calls its SignalTransferComplete().
+//      registered instance and calls its SignalTransferComplete() —
+//      unless ContinueTransfer() started a further part of it.
 //   4. isBusy(), called by whoever is waiting, sees the signal via
 //      WaitForTransfer(), calls onTransferLanded(), and releases the bus.
 //
@@ -103,6 +104,15 @@ protected:
     // event and calls SignalTransferComplete() once the transfer is
     // complete. Unused by I2C and SPI, which finish in one interrupt.
     virtual void HandleBusEvent(uint8_t event) { (void)event; }
+
+    // Interrupt context, via onTransferComplete(), before anything is
+    // signalled. For a transfer made of more than one hardware call
+    // under one chip-select (SpiBlockTransport: a header, then a block
+    // of data): start the next part and return true, and the transfer
+    // is not over yet. Return false to let it finish now, setting
+    // `failed` if starting the next part went wrong. Default: every
+    // transfer is a single call.
+    virtual bool ContinueTransfer(bool& failed) { (void)failed; return false; }
 
     // Called from isBusy(), in the waiting thread, once the transfer
     // has finished and before the bus is released. SPI uses it to

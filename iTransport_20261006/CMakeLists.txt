@@ -11,7 +11,8 @@ project(sensor_transport LANGUAGES CXX)
 #                 and SensorStateMachine
 #   aht20/, bme280/, bmp280/, DS18B20/, HMC6352/, htu21df/, lps35hw/,
 #   mpl3115a2/, PM25/, sht31/, si7021/
-#                 header-only sensor drivers, each with a host test
+#                 sensor drivers (class templates: the class in inc/,
+#                 its member definitions in src/*.tpp), each with a host test
 #
 # Each folder has its own CMakeLists.txt holding its targets; this file
 # only chooses the options and adds the folders in dependency order.

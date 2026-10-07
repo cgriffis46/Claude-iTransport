@@ -1,5 +1,6 @@
-# lps35hw: header-only driver.
-#   inc/lps35hw.h  the driver, for any transport, run from your own loop
+# lps35hw: sensor driver, a class template over its transport.
+#   inc/lps35hw.h  the class, for any transport, run from your own loop
+#   src/lps35hw.tpp  its member definitions, included by inc/lps35hw.h
 #   inc/xlps35hw.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

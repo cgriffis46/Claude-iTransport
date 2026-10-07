@@ -1,5 +1,6 @@
-# mpl3115a2: header-only driver.
-#   inc/mpl3115a2.h  the driver, for any transport, run from your own loop
+# mpl3115a2: sensor driver, a class template over its transport.
+#   inc/mpl3115a2.h  the class, for any transport, run from your own loop
+#   src/mpl3115a2.tpp  its member definitions, included by inc/mpl3115a2.h
 #   inc/xmpl3115a2.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

@@ -1,5 +1,6 @@
-# sht31: header-only driver.
-#   inc/SHT31.h  the driver, for any transport, run from your own loop
+# sht31: sensor driver, a class template over its transport.
+#   inc/SHT31.h  the class, for any transport, run from your own loop
+#   src/SHT31.tpp  its member definitions, included by inc/SHT31.h
 #   inc/xSHT31.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

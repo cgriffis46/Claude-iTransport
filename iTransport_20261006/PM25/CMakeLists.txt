@@ -1,5 +1,6 @@
-# PM25: header-only driver.
-#   inc/PM25.h  the driver, for any transport, run from your own loop
+# PM25: sensor driver, a class template over its transport.
+#   inc/PM25.h  the class, for any transport, run from your own loop
+#   src/PM25.tpp  its member definitions, included by inc/PM25.h
 #   inc/xPM25.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

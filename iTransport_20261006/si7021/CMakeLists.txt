@@ -1,5 +1,6 @@
-# si7021: header-only driver.
-#   inc/Si7021.h  the driver, for any transport, run from your own loop
+# si7021: sensor driver, a class template over its transport.
+#   inc/Si7021.h  the class, for any transport, run from your own loop
+#   src/Si7021.tpp  its member definitions, included by inc/Si7021.h
 #   inc/xSi7021.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

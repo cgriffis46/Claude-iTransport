@@ -1,5 +1,6 @@
-# HMC6352: header-only driver.
-#   inc/hmc6352.h  the driver, for any transport, run from your own loop
+# HMC6352: sensor driver, a class template over its transport.
+#   inc/hmc6352.h  the class, for any transport, run from your own loop
+#   src/hmc6352.tpp  its member definitions, included by inc/hmc6352.h
 #   inc/xhmc6352.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

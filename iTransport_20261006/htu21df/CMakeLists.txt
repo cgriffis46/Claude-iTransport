@@ -1,5 +1,6 @@
-# htu21df: header-only driver.
-#   inc/HTU21DF.h  the driver, for any transport, run from your own loop
+# htu21df: sensor driver, a class template over its transport.
+#   inc/HTU21DF.h  the class, for any transport, run from your own loop
+#   src/HTU21DF.tpp  its member definitions, included by inc/HTU21DF.h
 #   inc/xHTU21DF.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

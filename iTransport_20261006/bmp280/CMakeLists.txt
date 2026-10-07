@@ -1,5 +1,6 @@
-# bmp280: header-only driver.
-#   inc/bmp280.h  the driver, for any transport, run from your own loop
+# bmp280: sensor driver, a class template over its transport.
+#   inc/bmp280.h  the class, for any transport, run from your own loop
+#   src/bmp280.tpp  its member definitions, included by inc/bmp280.h
 #   inc/xbmp280.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

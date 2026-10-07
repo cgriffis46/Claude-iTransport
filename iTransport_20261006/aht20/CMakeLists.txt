@@ -1,5 +1,6 @@
-# aht20: header-only driver.
-#   inc/AHT20.h  the driver, for any transport, run from your own loop
+# aht20: sensor driver, a class template over its transport.
+#   inc/AHT20.h  the class, for any transport, run from your own loop
+#   src/AHT20.tpp  its member definitions, included by inc/AHT20.h
 #   inc/xAHT20.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

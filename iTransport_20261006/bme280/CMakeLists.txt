@@ -1,5 +1,6 @@
-# bme280: header-only driver.
-#   inc/BME280.h  the driver, for any transport, run from your own loop
+# bme280: sensor driver, a class template over its transport.
+#   inc/BME280.h  the class, for any transport, run from your own loop
+#   src/BME280.tpp  its member definitions, included by inc/BME280.h
 #   inc/xBME280.h  the same driver in its own CMSIS-RTOS2 task
 #
 # Needs itransport's sensor_transport and isensor's

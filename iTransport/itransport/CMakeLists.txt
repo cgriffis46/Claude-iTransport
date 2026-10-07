@@ -1,10 +1,10 @@
 # itransport: transport interfaces and bus implementations.
 #
-# Pulled in with add_subdirectory() — by iTransport_20261006's own
+# Pulled in with add_subdirectory() — by iTransport's own
 # top-level CMakeLists.txt, or by another project that wants the
-# transports, e.g. isensor/ or safeTransport_20261004:
+# transports, e.g. isensor/ or safeTransport:
 #
-#   add_subdirectory(../iTransport_20261006/itransport itransport)
+#   add_subdirectory(../iTransport/itransport itransport)
 #
 # Every option and cache variable it needs is declared here, so it
 # does not depend on which project includes it.

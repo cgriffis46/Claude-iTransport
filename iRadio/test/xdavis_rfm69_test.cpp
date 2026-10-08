@@ -169,8 +169,32 @@ static void dio0() {
 	check(exact, "the interrupt cut each sleep short: rx time is the very ms the packet ended");
 }
 
+static void rtcTimestamp() {
+	std::printf("xdavis_rfm69: RTC clock, DIO0 latched by the RTC's timestamp unit\n");
+	struct Clock : public iClock {
+		uint32_t ticksPerSecond() const override { return 32768; }
+		uint32_t now() override { return (uint32_t)((uint64_t)stubrtos::tick() * 32768u / 1000u); }
+	} rtc;
+	davis_param_t p = davis_default_param();
+	p.dio0_interrupt = true;
+	Rig r(p);
+	r.radio.setClock(&rtc);
+	// The callback of the timestamp event: the latched time is the
+	// packet's end, exact; the interrupt runs whenever it gets to run.
+	r.chip.dio0 = [&r] { r.radio.onDio0FromISRAt((uint32_t)((uint64_t)r.iss.next16 * 32768u / 16000u)); };
+	r.radio.start();
+	r.run(140000);
+	const size_t first = r.got.size();
+	r.run(300000);
+	bool exact = r.got.size() > first + 100;
+	for (size_t i = first + 1; i < r.got.size(); ++i)
+		if (r.got[i].rxTicks - r.got[i - 1].rxTicks != 41u * 2048u) exact = false;
+	check(exact && r.radio.schedule().station(0).missed == 0, "every packet, 83968 RTC ticks apart exactly");
+}
+
 int main() {
 	task();
+	rtcTimestamp();
 	commands();
 	dio0();
 	std::printf("%s (%d failed)\n", g_failures ? "FAILED" : "all passed", g_failures);

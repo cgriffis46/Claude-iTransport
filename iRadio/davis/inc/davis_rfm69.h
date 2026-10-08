@@ -34,6 +34,17 @@
  *  and out through deliver(): into a small ring for readPacket() here,
  *  into a FreeRTOS queue in xdavis_rfm69.
  *
+ *  Timing. With no clock given, packets are timed by the nowMs passed to
+ *  main(), the RTOS tick: as good as the oscillator the CPU runs on.
+ *  setClock() gives it a better one, an iClock such as Stm32RtcClock on
+ *  the 32.768 kHz watch crystal, and then the schedule and every packet
+ *  time are counted in that clock's ticks; nowMs is used only for bus
+ *  timeouts. Packet arrival is stamped from the clock in onDio0(), or
+ *  given exactly by onDio0At() from the RTC's timestamp unit. If the
+ *  clock is set while running (from SNTP, say), the step shows up as the
+ *  clock moving differently from nowMs; the schedule is shifted by it
+ *  and no station is lost.
+ *
  *  Repeated packets are ignored unless param.accept_repeater: a
  *  repeater's timing is not the station's, so they are not used for
  *  sync either way. The receiver never transmits.
@@ -52,6 +63,7 @@
 #include "ISensorTransport.h"
 #include "SPITransport.h"
 #include "SensorStateMachine.h"
+#include "iClock.h"
 #include "RFM69Regs.h"
 #include "DavisProtocol.h"
 #include "DavisSchedule.h"
@@ -105,6 +117,7 @@ typedef struct davis_stats_t{
 	uint32_t ignored;				// good CRC, but an inactive station or a repeater
 	uint32_t dropped;				// delivered, but nowhere to put it
 	uint32_t retunes;
+	uint32_t clock_steps;			// times the clock was seen to be set, and the schedule moved
 }davis_stats_t;
 
 template <typename TTransport>
@@ -125,9 +138,22 @@ public:
 
 	void main(uint32_t nowMs);
 
-	// From DIO0's rising edge (PayloadReady), with the time. Safe in an
-	// interrupt: it only sets two variables.
-	void onDio0(uint32_t nowMs) { irq_ms = nowMs; irq_pending = true; }
+	// Time packets by this clock instead of nowMs. Before the first
+	// main(), or the schedule starts over (it is counted in the clock's
+	// ticks). nullptr goes back to nowMs.
+	void setClock(iClock* clock);
+	uint32_t ticksPerSecond() const { return clock_ ? clock_->ticksPerSecond() : 16000u; }
+
+	// From DIO0's rising edge (PayloadReady). Stamps the time from the
+	// clock (or nowMs). Safe in an interrupt (iClock::now() is).
+	void onDio0(uint32_t nowMs) {
+		irq_ticks = clock_ ? clock_->now() : nowMs * 16u;
+		irq_pending = true;
+	}
+	// The same with the time already known, in the clock's ticks: from the
+	// RTC's timestamp unit (Stm32RtcClock::timestamp()), latched by DIO0
+	// on the RTC_TS pin in hardware.
+	void onDio0At(uint32_t ticks) { irq_ticks = ticks; irq_pending = true; }
 
 	// The next packet received, oldest first. False when there is none.
 	bool readPacket(DavisPacket& out);
@@ -160,8 +186,10 @@ private:
 	void queueConfiguration();
 	void queueTune(uint8_t channel);
 	void runOps(davis_state_t after, uint32_t nowMs);
-	void applyPending(uint32_t nowMs);
+	void applyPending(uint32_t now);
 	void handlePacket(uint32_t nowMs);
+	uint32_t clockNow(uint32_t nowMs);
+	uint32_t msFor(int32_t ticks) const;
 
 	davis_param_t param;
 	DavisSchedule sched;
@@ -176,11 +204,16 @@ private:
 
 	bool in_rx = false;
 	uint8_t tuned_channel = 0xFF;
-	uint32_t last_poll = 0;
-	uint32_t rx_ms = 0;
+	uint32_t last_poll = 0;				// ms
+	uint32_t rx_ticks = 0, rx_ms = 0;
 
 	volatile bool irq_pending = false;
-	volatile uint32_t irq_ms = 0;
+	volatile uint32_t irq_ticks = 0;
+
+	iClock* clock_ = nullptr;
+	bool clock_changed = false;
+	bool have_last_time = false;
+	uint32_t last_ms = 0, last_ticks = 0;
 
 	// Settings asked for between main()s.
 	bool band_pending = false, resync_pending = false;

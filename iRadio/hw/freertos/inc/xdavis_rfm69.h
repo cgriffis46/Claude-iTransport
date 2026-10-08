@@ -19,7 +19,11 @@
  *                any task go through a queue, and wake the radio task.
  *    DIO0        onDio0FromISR() from the pin's interrupt notes the time
  *                and wakes the task, which is otherwise asleep until
- *                the next packet is due.
+ *                the next packet is due. With the STM32 RTC as the clock
+ *                (setClock(&rtcClock)) and DIO0 on the RTC_TS pin, the
+ *                RTC latches the time in hardware and
+ *                HAL_RTCEx_TimeStampEventCallback passes it on with
+ *                onDio0FromISRAt(rtcClock.timestamp()).
  *
  *  The task sleeps in ulTaskNotifyTake() for as long as the state
  *  machine has nothing to do (sleep() below), so it costs nothing
@@ -105,14 +109,18 @@ public:
 		return post(c, wait);
 	}
 
-	// From DIO0's rising edge.
+	// From DIO0's rising edge: stamps the time from the clock (setClock())
+	// or the tick, and wakes the task.
 	void onDio0FromISR() {
 		this->onDio0((uint32_t)(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS));
-		if (task_ != nullptr) {
-			BaseType_t woken = pdFALSE;
-			vTaskNotifyGiveFromISR(task_, &woken);
-			portYIELD_FROM_ISR(woken);
-		}
+		wakeFromISR();
+	}
+	// The same with the time already latched, in the clock's ticks: from
+	// HAL_RTCEx_TimeStampEventCallback with DIO0 on the RTC_TS pin,
+	//     radio.onDio0FromISRAt(rtcClock.timestamp());
+	void onDio0FromISRAt(uint32_t ticks) {
+		this->onDio0At(ticks);
+		wakeFromISR();
 	}
 
 	// One pass: the commands waiting, then main() once (which sleeps when
@@ -128,6 +136,13 @@ protected:
 
 private:
 	static void taskEntry(void* arg) { static_cast<xdavis_rfm69*>(arg)->run(); }
+	void wakeFromISR() {
+		if (task_ != nullptr) {
+			BaseType_t woken = pdFALSE;
+			vTaskNotifyGiveFromISR(task_, &woken);
+			portYIELD_FROM_ISR(woken);
+		}
+	}
 	bool post(const davis_command_t& c, TickType_t wait);
 
 	QueueHandle_t packets_ = nullptr;

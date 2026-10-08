@@ -112,46 +112,54 @@ static void protocol() {
 struct Tx {
 	uint8_t id;
 	uint8_t channel;
-	uint32_t next16;
+	uint32_t next;			// ticks
 	bool on;
 	uint32_t sent;
 };
 
+// The world steps in ms; the schedule's clock counts tps ticks a second
+// (16000: the ms tick x 16; 32768 or 256: the RTC).
 struct World {
 	DavisSchedule s;
 	std::vector<Tx> tx;
-	uint32_t now = 0;
+	uint32_t now = 0;		// ms
+	uint32_t tps = 16000;
+	int64_t clockOffset = 0;	// the clock set away from true time
 	DavisSchedule::Plan plan = {0, 0, -1, false};
 	uint32_t heard[8] = {0};
 	uint8_t nCh = 51;
 
-	void start(uint32_t t0, uint8_t mask, davis_band_t band = davis_band_us) {
+	uint32_t trueTicks(uint32_t ms) const { return (uint32_t)((uint64_t)ms * tps / 1000u); }
+	uint32_t clock(uint32_t ms) const { return (uint32_t)((int64_t)trueTicks(ms) + clockOffset); }
+
+	void start(uint32_t t0, uint8_t mask, davis_band_t band = davis_band_us, uint32_t ticksPerSecond = 16000) {
 		now = t0;
+		tps = ticksPerSecond;
 		nCh = bandChannels(band);
-		s.begin(band, mask, now);
-		plan = s.plan(now);
+		s.begin(band, mask, clock(now), tps);
+		plan = s.plan(clock(now));
 	}
-	void add(uint8_t id, uint8_t channel, uint32_t firstMs) { tx.push_back({id, channel, firstMs * 16u, true, 0}); }
+	void add(uint8_t id, uint8_t channel, uint32_t firstMs) { tx.push_back({id, channel, trueTicks(firstMs), true, 0}); }
 	// Runs ms milliseconds. Returns packets heard.
 	uint32_t run(uint32_t ms) {
 		uint32_t n = 0;
 		for (uint32_t i = 0; i < ms; ++i, ++now) {
 			bool got = false;
 			for (Tx& t : tx) {
-				while ((int32_t)(now * 16u - t.next16) >= 0) {
+				while ((int32_t)(trueTicks(now) - t.next) >= 0) {
 					if (t.on) {
 						++t.sent;
-						if (plan.channel == t.channel && s.onPacket(t.id, t.channel, now)) {
+						if (plan.channel == t.channel && s.onPacket(t.id, t.channel, clock(now))) {
 							++heard[t.id];
 							++n;
 							got = true;
 						}
 					}
-					t.next16 += intervalSixteenths(t.id);
+					t.next += intervalTicks(t.id, tps);
 					t.channel = (uint8_t)((t.channel + 1) % nCh);
 				}
 			}
-			if (got || (int32_t)(plan.untilMs - now) <= 0) plan = s.plan(now);
+			if (got || s.expired(plan, clock(now))) plan = s.plan(clock(now));
 		}
 		return n;
 	}
@@ -236,6 +244,42 @@ static void schedule() {
 		w.add(7, 3, 0xFFFF0100u);
 		w.run(400000);
 		check(w.s.station(7).synced && w.s.station(7).missed == 0 && w.heard[7] > 80, "across the 32 bit ms rollover: synced, nothing missed");
+	}
+	for (uint32_t rate : {32768u, 2048u, 256u}) {
+		// The RTC's rates: the 32.768 kHz crystal, and its subsecond counter
+		// at 0.49 ms and at CubeMX's default 3.9 ms.
+		World w;
+		w.start(500, 0x05, davis_band_us, rate);
+		w.add(0, 7, 900);
+		w.add(2, 33, 1700);
+		w.run(300000);
+		const uint32_t h0 = w.heard[0], s0 = w.tx[0].sent;
+		w.run(300000);
+		char what[96];
+		std::snprintf(what, sizeof what, "RTC at %u ticks/s: two stations synced, station 1 none missed (%u/%u)",
+			rate, w.heard[0] - h0, w.tx[0].sent - s0);
+		check(w.s.station(0).synced && w.s.station(2).synced && w.heard[0] - h0 + 1 >= w.tx[0].sent - s0, what);
+		check(intervalTicks(0, rate) * 16 == 41 * rate, "and the interval a whole number of its ticks");
+	}
+	{
+		// The clock set while running, with nobody telling the schedule:
+		// it notices the jump and starts over.
+		World w;
+		w.start(0, 0x01, davis_band_us, 32768);
+		w.add(0, 4, 300);
+		w.run(140000);
+		w.clockOffset = -3600LL * 32768;			// an hour back
+		w.run(10);
+		check(w.s.clockJumps() == 1 && !w.s.station(0).synced, "clock set an hour back unannounced: noticed, starts over");
+		w.run(140000);
+		check(w.s.station(0).synced, "and finds the station again");
+		// Told about it (shift()), nothing is lost.
+		const uint32_t missed = w.s.station(0).missed;
+		w.clockOffset += 3600LL * 32768;
+		w.s.shift((int32_t)(3600LL * 32768));
+		w.run(60000);
+		check(w.s.clockJumps() == 1 && w.s.station(0).synced && w.s.station(0).missed == missed,
+			"set an hour on and shift()ed: nothing missed");
 	}
 	{
 		World w;

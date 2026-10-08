@@ -2,15 +2,21 @@
 
 namespace DAVIS {
 
-// The maximum time a plan runs before it is looked at again, even with
-// nothing due: a cap, not a timing rule.
+// The longest a plan runs before it is looked at again, even with nothing
+// due: a cap, not a timing rule.
 static const uint32_t kMaxPlanMs = 5000;
+// A clock that goes back more than a second, or on more than ten minutes
+// between two plans, was set: start over. (Ten minutes without a plan is
+// past losing every station anyway.)
+static const uint32_t kJumpBackMs = 1000;
+static const uint32_t kJumpOnMs = 600000;
 
 static inline int32_t diff(uint32_t a, uint32_t b) { return (int32_t)(a - b); }
 
-void DavisSchedule::begin(davis_band_t band, uint8_t activeMask, uint32_t nowMs, const Timing& timing) {
+void DavisSchedule::begin(davis_band_t band, uint8_t activeMask, uint32_t now, uint32_t ticksPerSecond, const Timing& timing) {
 	bandId = band;
 	nChannels = bandChannels(band);
+	tps = ticksPerSecond ? ticksPerSecond : 16000;
 	t = timing;
 	for (uint8_t i = 0; i < kMaxStations; ++i) {
 		st[i] = StationState();
@@ -18,7 +24,9 @@ void DavisSchedule::begin(davis_band_t band, uint8_t activeMask, uint32_t nowMs,
 	}
 	discTarget = -1;
 	discChannel = 0;
-	discStart16 = nowMs * 16u;
+	discStart = now;
+	lastNow = now;
+	haveLast = true;
 }
 
 uint8_t DavisSchedule::activeMask() const {
@@ -27,7 +35,7 @@ uint8_t DavisSchedule::activeMask() const {
 	return m;
 }
 
-void DavisSchedule::setStationActive(uint8_t id, bool active, uint32_t nowMs) {
+void DavisSchedule::setStationActive(uint8_t id, bool active, uint32_t now) {
 	StationState& s = st[id & 7];
 	if (s.active == active) return;
 	s.active = active;
@@ -35,37 +43,47 @@ void DavisSchedule::setStationActive(uint8_t id, bool active, uint32_t nowMs) {
 	s.lostInARow = 0;
 	if (!active && discTarget == (int8_t)(id & 7)) {
 		discTarget = -1;
-		discStart16 = nowMs * 16u;
+		discStart = now;
 	}
 }
 
-void DavisSchedule::resync(uint32_t nowMs) {
+void DavisSchedule::resync(uint32_t now) {
 	for (uint8_t i = 0; i < kMaxStations; ++i) {
 		st[i].synced = false;
 		st[i].lostInARow = 0;
 	}
 	discTarget = -1;
-	discStart16 = nowMs * 16u;
+	discStart = now;
+	lastNow = now;
 }
 
-bool DavisSchedule::onPacket(uint8_t id, uint8_t channel, uint32_t rxMs) {
+void DavisSchedule::shift(int32_t delta) {
+	for (uint8_t i = 0; i < kMaxStations; ++i) {
+		st[i].due += (uint32_t)delta;
+		st[i].lastRx += (uint32_t)delta;
+	}
+	discStart += (uint32_t)delta;
+	lastNow += (uint32_t)delta;
+}
+
+bool DavisSchedule::onPacket(uint8_t id, uint8_t channel, uint32_t rx) {
 	StationState& s = st[id & 7];
 	if (!s.active) return false;
 	if (channel >= nChannels) channel = 0;
 	s.synced = true;
-	s.dueSixteenths = rxMs * 16u + intervalSixteenths(id);
+	s.due = rx + interval(id);
 	s.channel = next(channel);
 	s.lostInARow = 0;
-	s.lastRxMs = rxMs;
+	s.lastRx = rx;
 	++s.packets;
 	if (discTarget == (int8_t)(id & 7)) {
 		discTarget = -1;
-		discStart16 = rxMs * 16u;
+		discStart = rx;
 	}
 	return true;
 }
 
-void DavisSchedule::lose(uint8_t id, uint32_t now16) {
+void DavisSchedule::lose(uint8_t id, uint32_t now) {
 	StationState& s = st[id];
 	s.synced = false;
 	s.lostInARow = 0;
@@ -75,14 +93,14 @@ void DavisSchedule::lose(uint8_t id, uint32_t now16) {
 	if (discTarget < 0) {
 		discTarget = (int8_t)id;
 		discChannel = s.channel;
-		discStart16 = now16;
+		discStart = now;
 	}
 }
 
 // The station to look for: the current one while it still needs looking
 // for, else the next active unsynced one after it. advance: move on even
 // if the current one still needs it (its time on this channel is up).
-void DavisSchedule::pickDiscoveryTarget(uint32_t now16, bool advance) {
+void DavisSchedule::pickDiscoveryTarget(uint32_t now, bool advance) {
 	if (!advance && discTarget >= 0 && st[discTarget].active && !st[discTarget].synced) return;
 	const int8_t from = discTarget;
 	discTarget = -1;
@@ -93,28 +111,38 @@ void DavisSchedule::pickDiscoveryTarget(uint32_t now16, bool advance) {
 			break;
 		}
 	}
-	if (advance || from < 0) discStart16 = now16;
+	if (advance || from < 0) discStart = now;
 }
 
-uint32_t DavisSchedule::toMs(uint32_t nowMs, int32_t delta16) {
-	if (delta16 <= 0) return nowMs;
-	return nowMs + (uint32_t)((delta16 + 15) / 16);
+bool DavisSchedule::expired(const Plan& p, uint32_t now) const {
+	const int32_t left = diff(p.until, now);
+	return left <= 0 || left > (int32_t)ticksFromMs(kMaxPlanMs + 1000);
 }
 
-DavisSchedule::Plan DavisSchedule::plan(uint32_t nowMs) {
-	const uint32_t now16 = nowMs * 16u;
-	const int32_t guard16 = (int32_t)t.guardMs * 16;
-	const int32_t late16 = (int32_t)t.lateMs * 16;
+DavisSchedule::Plan DavisSchedule::plan(uint32_t now) {
+	if (haveLast) {
+		const int32_t d = diff(now, lastNow);
+		if (d < -(int32_t)ticksFromMs(kJumpBackMs) || d > (int32_t)ticksFromMs(kJumpOnMs)) {
+			++jumps;
+			resync(now);
+		}
+	}
+	lastNow = now;
+	haveLast = true;
+
+	const int32_t guard = (int32_t)ticksFromMs(t.guardMs);
+	const int32_t late = (int32_t)ticksFromMs(t.lateMs);
+	const int32_t maxPlan = (int32_t)ticksFromMs(kMaxPlanMs);
 
 	// Packets that were due and did not come.
 	for (uint8_t i = 0; i < kMaxStations; ++i) {
 		StationState& s = st[i];
-		while (s.active && s.synced && diff(now16, s.dueSixteenths + (uint32_t)late16) > 0) {
+		while (s.active && s.synced && diff(now, s.due + (uint32_t)late) > 0) {
 			++s.missed;
 			++s.lostInARow;
-			s.dueSixteenths += intervalSixteenths(i);
+			s.due += interval(i);
 			s.channel = next(s.channel);
-			if (s.lostInARow >= t.resyncAfter) lose(i, now16);
+			if (s.lostInARow >= t.resyncAfter) lose(i, now);
 		}
 	}
 
@@ -122,38 +150,38 @@ DavisSchedule::Plan DavisSchedule::plan(uint32_t nowMs) {
 	int8_t best = -1;
 	for (uint8_t i = 0; i < kMaxStations; ++i) {
 		if (!st[i].active || !st[i].synced) continue;
-		if (best < 0 || diff(st[i].dueSixteenths, st[best].dueSixteenths) < 0) best = (int8_t)i;
+		if (best < 0 || diff(st[i].due, st[best].due) < 0) best = (int8_t)i;
 	}
 
 	Plan p;
 	p.discovery = false;
 	p.station = -1;
 
-	if (best >= 0 && diff(st[best].dueSixteenths - (uint32_t)guard16, now16) <= 0) {
+	if (best >= 0 && diff(st[best].due - (uint32_t)guard, now) <= 0) {
 		p.channel = st[best].channel;
 		p.station = best;
-		p.untilMs = toMs(nowMs, diff(st[best].dueSixteenths + (uint32_t)late16, now16));
+		p.until = st[best].due + (uint32_t)late;
 		return p;
 	}
 
-	pickDiscoveryTarget(now16, false);
+	pickDiscoveryTarget(now, false);
 	if (discTarget >= 0) {
 		// A cycle and one interval on each channel.
-		const int32_t step16 = (int32_t)((nChannels + 1u) * intervalSixteenths((uint8_t)discTarget));
-		if (diff(now16, discStart16) >= step16) {
+		const int32_t step = (int32_t)((nChannels + 1u) * interval((uint8_t)discTarget));
+		if (diff(now, discStart) >= step) {
 			discChannel = next(discChannel);
-			pickDiscoveryTarget(now16, true);
+			pickDiscoveryTarget(now, true);
 		}
-		int32_t until16 = diff(discStart16 + (uint32_t)step16, now16);
+		int32_t span = diff(discStart + (uint32_t)step, now);
 		if (best >= 0) {
-			const int32_t toBest = diff(st[best].dueSixteenths - (uint32_t)guard16, now16);
-			if (toBest < until16) until16 = toBest;
+			const int32_t toBest = diff(st[best].due - (uint32_t)guard, now);
+			if (toBest < span) span = toBest;
 		}
-		if (until16 > (int32_t)(kMaxPlanMs * 16)) until16 = (int32_t)(kMaxPlanMs * 16);
+		if (span > maxPlan) span = maxPlan;
+		if (span < 1) span = 1;
 		p.channel = discChannel;
 		p.discovery = true;
-		p.untilMs = toMs(nowMs, until16);
-		if (p.untilMs == nowMs) p.untilMs = nowMs + 1;
+		p.until = now + (uint32_t)span;
 		return p;
 	}
 
@@ -161,15 +189,15 @@ DavisSchedule::Plan DavisSchedule::plan(uint32_t nowMs) {
 		// Nothing to look for: wait on the next station's channel.
 		p.channel = st[best].channel;
 		p.station = best;
-		int32_t until16 = diff(st[best].dueSixteenths + (uint32_t)late16, now16);
-		if (until16 > (int32_t)(kMaxPlanMs * 16)) until16 = (int32_t)(kMaxPlanMs * 16);
-		p.untilMs = toMs(nowMs, until16);
+		int32_t span = diff(st[best].due + (uint32_t)late, now);
+		if (span > maxPlan) span = maxPlan;
+		p.until = now + (uint32_t)span;
 		return p;
 	}
 
 	// No station active.
 	p.channel = discChannel;
-	p.untilMs = nowMs + kMaxPlanMs;
+	p.until = now + (uint32_t)maxPlan;
 	return p;
 }
 

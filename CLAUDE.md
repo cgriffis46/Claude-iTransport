@@ -33,6 +33,11 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
   `iBlockTransport` (SPI block/DMA, used by the W5500).
 - Bus classes: `BusTransport`, `I2CTransport`, `SPITransport`,
   `SpiBlockTransport`, `OneWireUartTransport`.
+- `iClock` (`inc/iClock.h`): a free running counter (`ticksPerSecond()`,
+  `now()`, ISR-safe). `hw/stm32/Stm32RtcClock`: the RTC (LSE) as one,
+  `PREDIV_S + 1` ticks a second, from SSR/TR/DR read with interrupts
+  masked; `timestamp()` converts the RTC_TS timestamp unit's latch. Host
+  test against `test/stub_hal_rtc/`.
 - `hw/freertos/FreeRtosTransport<TBus>`: CMSIS-RTOS2 mutex and thread
   flags, shared by I2C/SPI/1-Wire.
 - `hw/stm32/`: `Stm32HalI2CTransport`, `Stm32HalSPITransport`,
@@ -87,6 +92,11 @@ older style) and `SensorStateMachine`.
   transfer each. It sets `SPITransport::AddressBit::WriteHigh` on an
   SPITransport (the RFM69 sets bit 7 to write) and reads the sync word
   back after configuring. Good packets go to the virtual `deliver()`.
+  `setClock(iClock*)` times packets by that clock (Stm32RtcClock) instead
+  of nowMs; `onDio0At(ticks)` takes a hardware-latched time. Clock steps
+  (the RTC set) are found by comparing the clock with nowMs and
+  `DavisSchedule::shift()`ed. The schedule counts in the clock's ticks
+  (`begin(..., ticksPerSecond)`); callers re-plan when `expired()`.
 - `hw/freertos/xdavis_rfm69.h` uses native FreeRTOS (queue, stream
   buffer, task notifications), like iNetTransport's hw/freertos;
   CMSIS-RTOS2 has no stream buffer. `sleep()` is `ulTaskNotifyTake()`,
@@ -150,10 +160,10 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
 ```
 
-Last known results: isensor 18 tests (its 13 drivers plus itransport's
-tests), iTransport 5, iNetTransport 11, iDisplay 8 (ssd1306_test,
-hd44780_test, gui_test and itransport's 5), iRadio 8 (davis_test,
-davis_rfm69_test, xdavis_rfm69_test and itransport's 5), all passing. Each test file also
+Last known results: isensor 19 tests (its 13 drivers plus itransport's
+tests), iTransport 6, iNetTransport 12, iDisplay 9 (ssd1306_test,
+hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
+davis_rfm69_test, xdavis_rfm69_test and itransport's 6), all passing. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
@@ -255,6 +265,8 @@ STM32L432KC (L4).
 15. Added `iRadio/`: the Davis ISS receiver on an RFM69, written new
     (the sketch's DavisRFM69 is CC-BY-SA), and
     `SPITransport::setAddressBit()` for Semtech radios.
+16. `iClock` and `Stm32RtcClock`; the Davis receiver timed by the STM32
+    RTC, with DIO0 latched by the RTC timestamp unit.
 
 ## Open items
 
@@ -271,7 +283,8 @@ STM32L432KC (L4).
   direct GPIO, not the 74HC595/SPI side). No inactivity timeout back to home (post `Home` from an
   application timer). FeatherM0_Davis_ISS_Ethernet's screens have not
   been moved onto it.
-- `iRadio`: not run against an RFM69 or an ISS. Repeater packets are
+- `iRadio`: not run against an RFM69 or an ISS. `Stm32RtcClock` not run
+  on a chip (compiled against the F407/L432/L476 HAL headers only). Repeater packets are
   delivered on request but never used for timing; no transmit.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;
   the files it names are already gone.

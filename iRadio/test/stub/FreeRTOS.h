@@ -11,6 +11,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <vector>
 
 typedef uint32_t TickType_t;
@@ -69,9 +70,15 @@ inline uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t ticks) {
 }
 
 // ---- queues ----
+// Queues and stream buffers live as long as the program, as they do on
+// the target; the stub keeps them so they are freed at exit.
 struct StubQueue { size_t item, depth; std::deque<std::vector<uint8_t>> q; };
 typedef StubQueue* QueueHandle_t;
-inline QueueHandle_t xQueueCreate(UBaseType_t depth, UBaseType_t item) { return new StubQueue{item, depth, {}}; }
+inline QueueHandle_t xQueueCreate(UBaseType_t depth, UBaseType_t item) {
+    static std::vector<std::unique_ptr<StubQueue>> all;
+    all.emplace_back(new StubQueue{item, depth, {}});
+    return all.back().get();
+}
 inline BaseType_t xQueueSend(QueueHandle_t h, const void* item, TickType_t) {
     if (h->q.size() >= h->depth) return pdFAIL;     // single threaded: nobody can make room while it waits
     const uint8_t* p = static_cast<const uint8_t*>(item);
@@ -89,7 +96,11 @@ inline UBaseType_t uxQueueMessagesWaiting(QueueHandle_t h) { return (UBaseType_t
 // ---- stream buffers ----
 struct StubStream { size_t size; std::deque<uint8_t> b; };
 typedef StubStream* StreamBufferHandle_t;
-inline StreamBufferHandle_t xStreamBufferCreate(size_t size, size_t) { return new StubStream{size, {}}; }
+inline StreamBufferHandle_t xStreamBufferCreate(size_t size, size_t) {
+    static std::vector<std::unique_ptr<StubStream>> all;
+    all.emplace_back(new StubStream{size, {}});
+    return all.back().get();
+}
 inline size_t xStreamBufferSpacesAvailable(StreamBufferHandle_t s) { return s->size - s->b.size(); }
 inline size_t xStreamBufferBytesAvailable(StreamBufferHandle_t s) { return s->b.size(); }
 inline size_t xStreamBufferSend(StreamBufferHandle_t s, const void* data, size_t n, TickType_t) {

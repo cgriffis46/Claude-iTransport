@@ -54,22 +54,67 @@ void davis_rfm69<TTransport>::resync() {
 }
 
 template <typename TTransport>
-void davis_rfm69<TTransport>::applyPending(uint32_t nowMs) {
+void davis_rfm69<TTransport>::setClock(iClock* clock) {
+	clock_ = clock;
+	clock_changed = true;
+}
+
+// Now, in the schedule's ticks. With a clock, it is also checked against
+// nowMs: a clock that moved a lot more or less than the RTOS tick since
+// the last look was set, and the schedule is moved with it. (Between two
+// looks the two clocks drift apart by their difference in rate times a
+// few seconds at most; half a second is far beyond that.)
+template <typename TTransport>
+uint32_t davis_rfm69<TTransport>::clockNow(uint32_t nowMs) {
+	if (clock_ == nullptr) return nowMs * 16u;
+	const uint32_t t = clock_->now();
+	if (have_last_time && schedule_started && !clock_changed) {
+		const uint32_t tps = clock_->ticksPerSecond();
+		const int64_t expected = (int64_t)(int32_t)(nowMs - last_ms) * tps / 1000;
+		const int64_t moved = (int32_t)(t - last_ticks);
+		const int64_t step = moved - expected;
+		if (step > (int64_t)(tps / 2) || step < -(int64_t)(tps / 2)) {
+			sched.shift((int32_t)step);
+			plan_now.until += (uint32_t)(int32_t)step;
+			++st.clock_steps;
+		}
+	}
+	have_last_time = true;
+	last_ms = nowMs;
+	last_ticks = t;
+	return t;
+}
+
+// ticks of the schedule's clock as RTOS ms, rounded up (for sleep()).
+template <typename TTransport>
+uint32_t davis_rfm69<TTransport>::msFor(int32_t ticks) const {
+	if (ticks <= 0) return 0;
+	const uint32_t tps = sched.ticksPerSecond();
+	return (uint32_t)(((uint64_t)ticks * 1000u + tps - 1u) / tps);
+}
+
+template <typename TTransport>
+void davis_rfm69<TTransport>::applyPending(uint32_t now) {
+	if (clock_changed) {
+		clock_changed = false;
+		sched.begin(param.band, active_wanted, now, ticksPerSecond());
+		active_changes = 0;
+	}
 	if (band_pending) {
 		band_pending = false;
 		param.band = new_band;
-		sched.begin(new_band, active_wanted, nowMs);
+		sched.begin(new_band, active_wanted, now, ticksPerSecond());
 		active_changes = 0;
 		in_rx = false;						// retune: the table changed
 	}
 	if (active_changes) {
 		for (uint8_t i = 0; i < kMaxStations; ++i)
-			if (active_changes & (1u << i)) sched.setStationActive(i, (active_wanted >> i) & 1, nowMs);
+			if (active_changes & (1u << i)) sched.setStationActive(i, (active_wanted >> i) & 1, now);
 		active_changes = 0;
 	}
 	if (resync_pending) {
 		resync_pending = false;
-		sched.resync(nowMs);
+		sched.resync(now);
 	}
 }
 
@@ -172,6 +217,7 @@ void davis_rfm69<TTransport>::handlePacket(uint32_t nowMs) {
 	p.rssi = (int16_t)(-(int16_t)reg_buf[3] / 2);
 	p.channel = tuned_channel;
 	p.rxMs = rx_ms;
+	p.rxTicks = rx_ticks;
 	p.station = p.raw[0] & 0x07;
 	p.viaRepeater = false;
 
@@ -197,7 +243,7 @@ void davis_rfm69<TTransport>::handlePacket(uint32_t nowMs) {
 		break;
 	}
 
-	if (sched.onPacket(p.station, p.channel, p.rxMs)) {
+	if (sched.onPacket(p.station, p.channel, p.rxTicks)) {
 		++st.packets;
 		deliver(p);
 		this->enter(davis_plan, nowMs);			// retune for what comes next
@@ -259,7 +305,8 @@ void davis_rfm69<TTransport>::main(uint32_t nowMs) {
 				break;
 			}
 			if (!schedule_started) {
-				sched.begin(param.band, active_wanted, nowMs);
+				clock_changed = false;
+				sched.begin(param.band, active_wanted, clockNow(nowMs), ticksPerSecond());
 				active_changes = 0;
 				schedule_started = true;
 			}
@@ -267,9 +314,10 @@ void davis_rfm69<TTransport>::main(uint32_t nowMs) {
 		}
 		break;
 
-	case davis_plan:
-		applyPending(nowMs);
-		plan_now = sched.plan(nowMs);
+	case davis_plan: {
+		const uint32_t now = clockNow(nowMs);
+		applyPending(now);
+		plan_now = sched.plan(now);
 		last_poll = nowMs;
 		if (!in_rx || plan_now.channel != tuned_channel) {
 			queueTune(plan_now.channel);
@@ -282,21 +330,24 @@ void davis_rfm69<TTransport>::main(uint32_t nowMs) {
 			this->enter(davis_listen, nowMs);
 		}
 		break;
+	}
 
 	case davis_listen: {
-		if (band_pending || active_changes || resync_pending) {
+		if (band_pending || active_changes || resync_pending || clock_changed) {
 			this->enter(davis_plan, nowMs);
 			break;
 		}
 		const uint32_t every = param.dio0_interrupt ? detail::kDio0BackstopMs : param.poll_ms;
-		const int32_t toEnd = (int32_t)(plan_now.untilMs - nowMs);
+		const uint32_t now = clockNow(nowMs);
+		const int32_t toEnd = sched.expired(plan_now, now) ? 0 : (int32_t)(plan_now.until - now);
 		const int32_t toPoll = (int32_t)(every - (nowMs - last_poll));
 		if (irq_pending || toPoll <= 0 || toEnd <= 0) {
 			this->enter(davis_read_flags, nowMs);
 		} else {
 			// Nothing to do until the next poll or the end of the plan;
 			// xdavis_rfm69 wakes early on DIO0.
-			this->sleep((uint32_t)(toEnd < toPoll ? toEnd : toPoll));
+			const uint32_t endMs = msFor(toEnd);
+			this->sleep(endMs < (uint32_t)toPoll ? endMs : (uint32_t)toPoll);
 		}
 		break;
 	}
@@ -310,10 +361,13 @@ void davis_rfm69<TTransport>::main(uint32_t nowMs) {
 			last_poll = nowMs;
 			const bool fromIrq = irq_pending;
 			irq_pending = false;
+			const uint32_t now = clockNow(nowMs);
 			if (reg_buf[0] & RFM69_IRQ2_PAYLOADREADY) {
-				rx_ms = fromIrq ? irq_ms : nowMs;
+				rx_ticks = fromIrq ? irq_ticks : now;
+				// In ms: exact without a clock; with one, when it was seen.
+				rx_ms = clock_ ? nowMs : rx_ticks / 16u;
 				this->enter(davis_read_signal, nowMs);
-			} else if ((int32_t)(plan_now.untilMs - nowMs) <= 0) {
+			} else if (sched.expired(plan_now, now)) {
 				this->enter(davis_plan, nowMs);
 			} else {
 				this->enter(davis_listen, nowMs);

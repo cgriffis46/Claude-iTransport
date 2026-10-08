@@ -266,12 +266,151 @@ static void faults() {
 	}
 }
 
+// ---- timing by a clock other than the RTOS tick ----
+
+// A clock running on true time (the RTC's crystal), set away from it by
+// offset when the test sets it.
+struct FakeClock : public iClock {
+	uint32_t tps;
+	uint32_t trueMs = 0;
+	int64_t offset = 0;
+	explicit FakeClock(uint32_t ticksPerSecond) : tps(ticksPerSecond) {}
+	uint32_t ticksPerSecond() const override { return tps; }
+	uint32_t now() override { return (uint32_t)((int64_t)((uint64_t)trueMs * tps / 1000u) + offset); }
+	// A time in sixteenths of a true ms, in this clock's ticks: what the
+	// RTC's timestamp unit would latch.
+	uint32_t at16(uint32_t t16) const { return (uint32_t)((int64_t)((uint64_t)t16 * tps / 16000u) + offset); }
+};
+
+// True time moves in ms; the CPU's tick (and so nowMs) can run fast or
+// slow of it, as an uncalibrated RC oscillator does.
+struct ClockWorld {
+	sim::Rfm69 chip;
+	davis_rfm69<sim::Bus> radio;
+	FakeClock clock;
+	sim::Iss iss;
+	uint32_t trueMs = 0;
+	int32_t tickPpm = 0;			// how fast the RTOS tick runs, parts per million
+	std::vector<DavisPacket> got;
+
+	ClockWorld(const davis_param_t& p, uint32_t tps, int32_t ppm)
+		: radio(p, chip), clock(tps), iss(0, davis_band_us, 12, 1000), tickPpm(ppm) {}
+
+	uint32_t tickMs() const { return (uint32_t)((int64_t)trueMs * (1000000 + tickPpm) / 1000000); }
+
+	void run(uint32_t ms) {
+		for (uint32_t i = 0; i < ms; ++i, ++trueMs) {
+			chip.now = trueMs;
+			clock.trueMs = trueMs;
+			iss.tick(trueMs, chip);
+			radio.main(tickMs());
+			radio.main(tickMs());
+			DavisPacket p;
+			while (radio.readPacket(p)) got.push_back(p);
+		}
+	}
+	// Packets received out of those sent over the next ms.
+	uint32_t share(uint32_t ms) {
+		const size_t g = got.size();
+		const uint32_t s = iss.sent;
+		run(ms);
+		return (uint32_t)((got.size() - g) * 100 / (iss.sent - s));
+	}
+};
+
+static void clocks() {
+	std::printf("davis_rfm69 timed by a clock (the STM32 RTC)\n");
+	davis_param_t p = davis_default_param();
+	{
+		// The CPU on an RC oscillator 1 % fast: by the RTOS tick, each
+		// packet comes 26 ms later than it should, past the 20 ms window.
+		ClockWorld tick(p, 16000, 10000);
+		tick.run(150000);
+		const uint32_t byTick = tick.share(600000);
+		ClockWorld rtc(p, 32768, 10000);
+		rtc.radio.setClock(&rtc.clock);
+		rtc.run(150000);
+		const uint32_t byRtc = rtc.share(600000);
+		std::printf("        CPU clock 1 %% fast, 10 min: %u %% of packets by the tick, %u %% by the RTC\n", byTick, byRtc);
+		check(byTick < 50, "timed by the RTOS tick: most packets lost");
+		check(byRtc == 100 && rtc.radio.schedule().station(0).missed == 0, "timed by the RTC's crystal: every packet");
+		check(rtc.radio.ticksPerSecond() == 32768 && rtc.radio.schedule().ticksPerSecond() == 32768, "the schedule counts in the RTC's ticks");
+	}
+	{
+		// DIO0 on the RTC_TS pin: the RTC latches the end of each packet in
+		// hardware, to the tick.
+		davis_param_t q = p;
+		q.dio0_interrupt = true;
+		ClockWorld w(q, 32768, 0);
+		w.radio.setClock(&w.clock);
+		w.chip.dio0 = [&w] { w.radio.onDio0At(w.clock.at16(w.iss.next16)); };
+		w.run(150000);
+		const size_t first = w.got.size();
+		w.run(300000);
+		bool exact = w.got.size() > first + 100;
+		for (size_t i = first + 1; i < w.got.size(); ++i)
+			if (w.got[i].rxTicks - w.got[i - 1].rxTicks != 41u * 2048u) exact = false;
+		check(exact, "hardware timestamps: every packet exactly 83968 ticks (2.5625 s) after the last");
+	}
+	{
+		// DIO0 on an ordinary EXTI pin: the interrupt reads the clock.
+		davis_param_t q = p;
+		q.dio0_interrupt = true;
+		ClockWorld w(q, 32768, 0);
+		w.radio.setClock(&w.clock);
+		w.chip.dio0 = [&w] { w.radio.onDio0(w.tickMs()); };
+		w.run(150000);
+		const size_t first = w.got.size();
+		w.run(300000);
+		bool close = w.got.size() > first + 100;
+		for (size_t i = first + 1; i < w.got.size(); ++i) {
+			const int32_t gap = (int32_t)(w.got[i].rxTicks - w.got[i - 1].rxTicks) - 41 * 2048;
+			if (gap < -33 || gap > 33) close = false;
+		}
+		check(close, "stamped from the clock in the interrupt: within a ms (33 ticks)");
+	}
+	{
+		// The RTC set an hour on (from SNTP) while receiving: seen as the
+		// clock jumping against the RTOS tick, and the schedule moved.
+		ClockWorld w(p, 2048, 0);
+		w.radio.setClock(&w.clock);
+		w.run(150000);
+		w.run(60000);
+		const uint32_t missed = w.radio.schedule().station(0).missed;
+		w.clock.offset += 3600LL * 2048;
+		w.run(60000);
+		w.clock.offset -= 7200LL * 2048;				// and two hours back
+		const uint32_t share = w.share(60000);
+		check(w.radio.stats().clock_steps == 2 && w.radio.schedule().clockJumps() == 0, "RTC set on an hour, then back two: both steps seen");
+		check(w.radio.schedule().station(0).missed == missed && share == 100, "and not a packet missed");
+	}
+	{
+		// CubeMX's default prescalers: 3.9 ms ticks.
+		ClockWorld w(p, 256, 0);
+		w.radio.setClock(&w.clock);
+		w.run(150000);
+		check(w.share(300000) == 100 && w.radio.schedule().station(0).missed == 0, "RTC at 256 ticks/s (CubeMX default): every packet");
+	}
+	{
+		// Given the clock while running: the schedule starts over in its ticks.
+		ClockWorld w(p, 32768, 0);
+		w.run(150000);
+		check(w.radio.schedule().station(0).synced && w.radio.schedule().ticksPerSecond() == 16000, "running on the tick");
+		w.radio.setClock(&w.clock);
+		w.run(1000);
+		check(w.radio.schedule().ticksPerSecond() == 32768 && !w.radio.schedule().station(0).synced, "setClock(): starts over on the RTC");
+		w.run(150000);
+		check(w.radio.schedule().station(0).synced, "and finds the station again");
+	}
+}
+
 int main() {
 	configuration();
 	receive<sim::Bus>("davis_rfm69<sim::Bus>", false);
 	receive<sim::Bus>("davis_rfm69<sim::Bus>", true);
 	receive<sim::Spi>("davis_rfm69<sim::Spi> (the real SPITransport)", false);
 	faults();
+	clocks();
 	std::printf("%s (%d failed)\n", g_failures ? "FAILED" : "all passed", g_failures);
 	return g_failures ? 1 : 0;
 }

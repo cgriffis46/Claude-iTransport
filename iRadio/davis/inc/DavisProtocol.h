@@ -54,6 +54,11 @@ uint32_t channelHz(davis_band_t band, uint8_t channel);
 // holds it exactly: (41 + id) * 1000. The receiver counts time in these
 // so 50 missed packets do not add up to 25 ms of rounding.
 inline uint32_t intervalSixteenths(uint8_t id) { return (uint32_t)(41 + (id & 7)) * 1000u; }
+// The same in ticks of a clock that counts ticksPerSecond a second: whole
+// when that is a multiple of 16 (16000, 256, 2048, 32768 ...).
+inline uint32_t intervalTicks(uint8_t id, uint32_t ticksPerSecond) {
+	return (uint32_t)(((uint64_t)(41 + (id & 7)) * ticksPerSecond) / 16u);
+}
 
 uint8_t reverseBits(uint8_t b);
 
@@ -81,7 +86,8 @@ struct DavisPacket {
 	uint8_t channel;			// index in the band's table
 	int16_t rssi;				// dBm
 	int32_t feiHz;				// frequency error the radio measured
-	uint32_t rxMs;				// when it arrived (end of the packet)
+	uint32_t rxMs;				// when it arrived (end of the packet), RTOS ms
+	uint32_t rxTicks;			// the same in the receiver's clock (see davis_rfm69::setClock())
 	bool viaRepeater;
 };
 

@@ -10,6 +10,52 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- `iDisplay/hd44780`: a non-blocking HD44780 character LCD driver (16x1
+  up to 40x2 and 20x4) behind an I2C port expander, the PCF8574 board or
+  Adafruit's MCP23008 backpack, with `xhd44780` for CMSIS-RTOS2. It is an
+  `iTextSurface` and an `iDisplayDevice`, so the GUI runs on it
+  unchanged. It sends only the characters that changed, keeps the
+  datasheet's power-up, reset and clear waits, and recovers by itself,
+  custom characters included. Backlight, display on/off and eight custom
+  characters. Host test with 39 checks against a simulated LCD that
+  flags timing and E-edge setup violations
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
+- `iTextSurface::showEditCursor()`: `xTextField` marks the cell it is
+  editing, which a character LCD shows with its blinking cursor, as it
+  cannot draw inverse
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
+- `iDisplay`: long press and auto-repeat buttons. `xButtonConfig` makes a
+  button plain, long press (a short press is `Pressed` on release, a long
+  one is `Held`, never both) or auto-repeat (`Pressed`, then `Repeat`
+  while held). `xGuiButtonGroup` runs the periodic CMSIS-RTOS2 timer that
+  posts `Held` and `Repeat` to the GUI's queue. Menus and fields step on
+  `Repeat`, and holding Enter is back in a menu and cancel in a field.
+  `gui_test` now has 128 checks
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
+- `iDisplay/`: a new module for displays and a GUI to run on them.
+  - `display_core`: `iTextSurface` (a grid of character cells, so the
+    same menus run on a graphic or character display), `MonoCanvas` (a
+    1 bit frame buffer in the SSD1306 page layout with pixels, lines,
+    rectangles and text), a 5x7 font with a degree sign, and the
+    `iDisplayDevice` interface.
+  - `ssd1306/`: a non-blocking SSD1306 128x64 / 128x32 driver on
+    `SensorStateMachine`, over I2C (`ssd1306`) or 4-wire SPI with a D/C
+    pin (`ssd1306_spi`), and `xssd1306` for CMSIS-RTOS2. It sends only the
+    pages that changed, and powers up again and repaints by itself
+    after a failure. Host test with 47 checks.
+  - `gui/`: `xScreen`, `xGuiCore` (the screen stack), `xMenu` /
+    `xMenuScreen`, `xYesNoField`, `xChoiceField`, `xTextField` and
+    `xButton` (debounce, safe in an interrupt), ported from the
+    `xDisplay` classes in FeatherM0_Davis_ISS_Ethernet. Fixed on the
+    way: menu scrolling, submenus, text field bounds, and the release
+    check of two of the buttons.
+  - `hw/freertos/`: `xGui`, the GUI task, and `xGuiButton`
+    (CMSIS-RTOS2). Buttons only post to a one-event queue, and the task
+    only acts on events from it. Host test with 86 checks over a
+    simulated queue.
+  - Compiled for Cortex-M4 and Cortex-M0+ with `arm-none-eabi-g++ 13.3`
+    (`-std=gnu++14 -fno-exceptions -fno-rtti`). Not run on hardware.
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13))
 - `iNetTransport/dns/DnsClient`: a DNS client written as pure logic, for
   one A-record lookup at a time. It checks the reply's ID and question,
   follows CNAMEs and retries three times over 10 s. Host test with 27
@@ -41,6 +87,9 @@ pull request, newest first.
   ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
+- `iDisplay`: `kDegreeChar` moved from `Font5x7.h` to `iTextSurface.h`,
+  as every surface uses it
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
 - W5500: socket 7 is now a UDP service socket for DHCP, DNS and SNTP,
   open whenever it is kept back, with a static address too.
   `w5500_param_t::dhcp` is now `serviceSocket`, `dhcpSeed` is now `seed`,

@@ -12,6 +12,8 @@ isensor/                 sensor base classes and one folder per sensor driver
 iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
                          DHCP, DNS, SNTP)
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server
+iDisplay/                displays (SSD1306) and a GUI: screens, menus,
+                         fields, buttons, a CMSIS-RTOS2 GUI task
 safeTransport/           safety: Safe interface, devices, zones, relays, CAN,
                          CIP Safety placeholders, events
 ```
@@ -43,6 +45,35 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
 `aht20 bme280 bmp280 DS18B20 HMC6352 htu21df lps35hw lsm303dlhc mmc56x3
 mpl3115a2 PM25 sht31 si7021`, plus `SensorBase`/`BMP280Sensor` (the
 older style) and `SensorStateMachine`.
+
+### iDisplay
+- `display_core` (`inc/`, `src/`): `iTextSurface` (character cells and
+  a cursor), `MonoCanvas` (1 bit frame buffer in SSD1306 page layout,
+  also an `iTextSurface` of 6x8 cells), `Font5x7`, and
+  `iDisplayDevice` (`text()`, `requestFlush()`, `main()`, `idle()`,
+  `failed()`), which every display driver provides.
+- `ssd1306/`: `ssd1306<TTransport, H>` (I2C; the control byte is the
+  "register" of `writeRegs`), `ssd1306_spi` (D/C pin callback,
+  `writeBytes`), `xssd1306*` (osDelay sleeps). Written like a sensor
+  driver on `SensorStateMachine`. It sends only pages whose hash changed.
+- `hd44780/`: `hd44780<TTransport, COLS, ROWS>` behind a PCF8574 (`writeBytes`) or
+  MCP23008 (IOCON.SEQOP, then `writeRegs(GPIO, ...)`) backpack, 4-bit
+  mode, three expander bytes per nibble. Diffs a shadow character
+  buffer. Shows the text field's cell with the blinking cursor
+  (`iTextSurface::showEditCursor`). Waits are rounded up a tick
+  (1 ms ticks can be short by up to 1 ms). `xhd44780` sleeps with osDelay.
+- `gui/` (no RTOS): `xScreen`/`xNavigator`, `xGuiCore` (screen stack,
+  home at the bottom), `xMenu`/`xMenuScreen`, `xYesNoField`,
+  `xChoiceField`, `xTextField`, `xButton` (ISR-safe debounce; plain,
+  long press or auto-repeat via `xButtonConfig`).
+- `hw/freertos/`: `xGui` (the GUI task), `xGuiButton`, and
+  `xGuiButtonGroup` (periodic osTimer that posts `Held`/`Repeat`; a pin
+  interrupt cannot start a CMSIS-RTOS2 timer), CMSIS-RTOS2 only. The owner's design rule: buttons only post to the GUI's event
+  queue, which holds one event (that is the flow control: presses
+  arriving while it is full are dropped), and the GUI task only acts on
+  events from that queue (no timer, no polling; data threads post
+  `Refresh`). Screens specific to an application stay in the
+  application (e.g. FeatherM0_Davis_ISS_Ethernet's weather screens).
 
 ## How a sensor driver is written
 
@@ -93,10 +124,13 @@ cmake -S <isensor|iTransport|iNetTransport> -B build \
 cmake --build build && ctest --test-dir build
 cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST      # builds, no tests
 cmake -S PLCTransport -B build                                  # plc_tags
+cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
+      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # ssd1306_test, gui_test
 ```
 
 Last known results: isensor 18 tests (its 13 drivers plus itransport's
-tests), iTransport 5, iNetTransport 11, all passing. Each test file also
+tests), iTransport 5, iNetTransport 11, iDisplay 8 (ssd1306_test,
+hd44780_test, gui_test and itransport's 5), all passing. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
@@ -189,6 +223,13 @@ STM32L432KC (L4).
     `xNetInterface::resolve()`/`unixTimeMs()`), on the W5500's service
     socket and through the ESP-AT module's own commands.
 
+12. Added `iDisplay/`: the SSD1306 driver and the GUI classes, ported
+    from FeatherM0_Davis_ISS_Ethernet's `.ino` (`xDisplay` became
+    `xScreen`) onto CMSIS-RTOS2 for the eventual STM32 port.
+13. Long press and auto-repeat buttons (`Held`, `Repeat`) through
+    `xGuiButtonGroup`'s timer.
+14. HD44780 character LCD driver (PCF8574 and MCP23008 backpacks).
+
 ## Open items
 
 - None of the drivers or libraries has run on hardware. The MMC56x3,
@@ -200,6 +241,10 @@ STM32L432KC (L4).
   written against ODVA's CIP Safety spec). `Stm32HalCanTransport` needs
   a CubeMX project with CAN enabled, and `SafeZoneJsonPersistence`
   needs nlohmann/json.
+- `iDisplay`: the HD44780 driver covers the I2C backpacks only (not
+  direct GPIO, not the 74HC595/SPI side). No inactivity timeout back to home (post `Home` from an
+  application timer). FeatherM0_Davis_ISS_Ethernet's screens have not
+  been moved onto it.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;
   the files it names are already gone.
 - `safeTransport/sensor_fw.zip` and its `*.html` files are old reference

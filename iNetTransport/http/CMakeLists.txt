@@ -5,6 +5,9 @@
 # For a client, HttpClientProtocol has URLs, the request head and
 # HttpResponseReader; hw/freertos/xHttpClient runs it on the caller's thread.
 # HttpFiles serves a web UI from files (a folder via FILE*, or flash).
+# WebAuth: logins, sessions, roles, CSRF (the password check comes from
+# tls/WebPassword). HttpJson reads small JSON bodies. HttpsRedirect sends
+# plain HTTP on to HTTPS.
 #
 # Added by iNetTransport/CMakeLists.txt. Needs nothing else.
 add_library(inet_http STATIC
@@ -15,12 +18,18 @@ add_library(inet_http STATIC
     inc/HttpConnection.h
     inc/HttpClientProtocol.h
     inc/HttpFiles.h
+    inc/HttpJson.h
+    inc/HttpRedirect.h
+    inc/WebAuth.h
     src/HttpLexer.cpp
     src/HttpRequest.cpp
     src/HttpResponse.cpp
     src/HttpConnection.cpp
     src/HttpClientProtocol.cpp
     src/HttpFiles.cpp
+    src/HttpJson.cpp
+    src/HttpRedirect.cpp
+    src/WebAuth.cpp
 )
 
 target_include_directories(inet_http PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -37,4 +46,8 @@ if(SENSOR_FW_BUILD_TESTS)
     add_executable(HttpFiles_test test/HttpFiles_test.cpp)
     target_link_libraries(HttpFiles_test PRIVATE inet_http)
     add_test(NAME HttpFiles_test COMMAND HttpFiles_test)
+    find_package(Threads REQUIRED)
+    add_executable(WebAuth_test test/WebAuth_test.cpp)
+    target_link_libraries(WebAuth_test PRIVATE inet_http Threads::Threads)
+    add_test(NAME WebAuth_test COMMAND WebAuth_test)
 endif()

@@ -28,6 +28,8 @@
 #                              plc_web is skipped if it isn't there)
 #   SENSOR_FW_BUILD_TESTS      the host tests: plc_web's, the second of
 #                              them over real sockets with curl
+#   MBEDTLS_DIR                an mbedTLS 3.6 source tree: adds
+#                              PlcWebSecure_test (HTTPS, logins, writes)
 #
 # cip_tag_server is built when FREERTOS_INCLUDE_DIRS and
 # LWIP_INCLUDE_DIRS are both set, and needs PLC_MUTEX_USE_CMSIS_RTOS2.
@@ -147,6 +149,27 @@ if(EXISTS ${INET_DIR}/http/CMakeLists.txt)
                 ${INET_DIR}/dns/inc ${INET_DIR}/sntp/inc ${INET_DIR}/sockets/inc)
             target_link_libraries(PlcWebServer_test PRIVATE plc_web Threads::Threads)
             add_test(NAME PlcWebServer_test COMMAND PlcWebServer_test)
+
+            # The same with HTTPS, logins and writes, when mbedTLS is given.
+            set(MBEDTLS_DIR "" CACHE PATH "An mbedTLS 3.6 source tree, for PlcWebSecure_test")
+            if(NOT MBEDTLS_DIR STREQUAL "")
+                include(${INET_DIR}/tls/mbedtls.cmake)
+                add_executable(PlcWebSecure_test web/test/PlcWebSecure_test.cpp
+                    ${INET_DIR}/tls/src/MbedTlsServer.cpp
+                    ${INET_DIR}/tls/src/WebPassword.cpp
+                    ${INET_DIR}/sockets/src/SocketNetDevice.cpp
+                    ${INET_DIR}/hw/freertos/src/xNetInterface.cpp
+                    ${INET_DIR}/hw/freertos/src/xClient.cpp
+                    ${INET_DIR}/hw/freertos/src/xHttpServer.cpp
+                    ${INET_DIR}/dns/src/DnsClient.cpp
+                    ${INET_DIR}/sntp/src/SntpClient.cpp)
+                target_include_directories(PlcWebSecure_test PRIVATE
+                    ${INET_DIR}/test/stub ${INET_DIR}/inc ${INET_DIR}/hw/freertos/inc
+                    ${INET_DIR}/dns/inc ${INET_DIR}/sntp/inc ${INET_DIR}/sockets/inc
+                    ${INET_DIR}/tls/inc ${INET_DIR}/tls/test)
+                target_link_libraries(PlcWebSecure_test PRIVATE plc_web mbedtls_inet Threads::Threads)
+                add_test(NAME PlcWebSecure_test COMMAND PlcWebSecure_test)
+            endif()
         endif()
     endif()
 endif()

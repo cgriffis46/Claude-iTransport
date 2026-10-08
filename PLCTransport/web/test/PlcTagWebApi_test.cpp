@@ -20,6 +20,8 @@
 #include "HttpLexer.h"
 #include "PlcTagWebApi.h"
 #include "PlcWebDefaultPage.h"
+#include "HttpJson.h"
+#include "WebAuth.h"
 
 static int g_failures = 0;
 static void check(bool ok, const char* what) {
@@ -52,11 +54,15 @@ struct Web {
     HttpLexer lx;
     Sink sink;
 
-    std::string get(const std::string& target) {
+    std::string get(const std::string& target) { return request("GET", target); }
+    std::string request(const std::string& method, const std::string& target, const std::string& headers = "",
+                        const std::string& body = "") {
         out.data.clear();
         conn.reset();
         lx.reset();
-        const std::string req = "GET " + target + " HTTP/1.1\r\nHost: plc\r\n\r\n";
+        std::string req = method + " " + target + " HTTP/1.1\r\nHost: plc\r\n" + headers;
+        if (method == "POST") req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+        req += "\r\n" + body;
         lx.feed(reinterpret_cast<const uint8_t*>(req.data()), req.size(), sink);
         while (!sink.q.empty()) { conn.onToken(sink.q.front()); sink.q.pop_front(); }
         return out.data;
@@ -81,6 +87,32 @@ struct Web {
 };
 
 struct Motor { float speed; int32_t faults; uint8_t mode; };
+
+// WebAuth's inputs: a plain-text password check standing in for PBKDF2.
+static uint32_t clockMs(void*) { return 1000; }
+static bool rnd(uint8_t* out, size_t n, void*) {
+    for (size_t i = 0; i < n; ++i) out[i] = static_cast<uint8_t>(std::rand());
+    return true;
+}
+static bool plainVerify(const WebUser& u, const char* pw, void*) {
+    return std::strcmp(reinterpret_cast<const char*>(u.salt), pw) == 0;
+}
+static WebUser user(const char* name, WebRole role, const char* pw) {
+    WebUser u{};
+    u.name = name;
+    u.role = role;
+    std::strncpy(reinterpret_cast<char*>(u.salt), pw, sizeof u.salt - 1);
+    return u;
+}
+struct Audit {
+    std::string log;
+    static void fn(const char* who, const PlcTagSnapshot& before, const PlcTagSnapshot& after, void* ctx) {
+        char b[80], a[80];
+        PlcTagWebApi::formatValue(before, b, sizeof b);
+        PlcTagWebApi::formatValue(after, a, sizeof a);
+        static_cast<Audit*>(ctx)->log += std::string(who) + " " + before.name + " " + b + "->" + a + ";";
+    }
+};
 
 int main() {
     PlcTagRegistry reg;
@@ -207,6 +239,111 @@ int main() {
         w.get("/api/tags");
         check(blocked == 0, "the lock is free whenever the response is being written");
         check(dint == 7, "and the writes went through");
+    }
+
+    std::printf("writes\n");
+    {
+        const WebUser users[] = {user("op", WebRole::Operator, "op-pass"), user("view", WebRole::Viewer, "view-pass")};
+        WebAuth::Config ac;
+        ac.users = users;
+        ac.userCount = 2;
+        ac.verify = plainVerify;
+        ac.random = rnd;
+        ac.now = clockMs;
+        WebAuth auth(ac);
+        const PlcWebWritable allowed[] = {
+            {"Temp", -20, 80}, {"Run", 0, 0}, {"Dint", -100, 1000}, {"Lint", -1e19, 1e19}, {"Ulint", 0, 2e19},
+            {"Int", -50, 50}, {"Usint", 0, 255}, {"Motor1", 0, 1}, {"Sint", -128, 127}, {"Lreal", -1, 1},
+        };
+        Audit audit;
+        PlcTagWebApi::Config pc;
+        pc.auth = &auth;
+        pc.writable = allowed;
+        pc.writableCount = sizeof allowed / sizeof allowed[0];
+        pc.audit = Audit::fn;
+        pc.auditCtx = &audit;
+        PlcTagWebApi api(reg, pc);
+        Web w;
+        w.conn.setSecure(true);
+        check(api.attach(w.routes) && auth.attach(w.routes), "routes, with the POST");
+
+        auto login = [&](const char* u, const char* p, std::string& cookie, std::string& csrf) {
+            const std::string r = w.request("POST", "/api/login", "Content-Type: application/json\r\n",
+                                            std::string("{\"user\":\"") + u + "\",\"password\":\"" + p + "\"}");
+            const size_t at = r.find("Set-Cookie: ");
+            cookie = r.substr(at + 12, r.find(';', at) - at - 12);
+            const std::string b = Web::body(r);
+            char tok[40] = "";
+            HttpJson::string(b.data(), b.size(), "csrf", tok, sizeof tok);
+            csrf = tok;
+        };
+        std::string ck, tok, vck, vtok;
+        login("op", "op-pass", ck, tok);
+        login("view", "view-pass", vck, vtok);
+        const std::string op = "Cookie: " + ck + "\r\nX-CSRF-Token: " + tok + "\r\nContent-Type: application/json\r\n";
+        auto post = [&](const std::string& name, const std::string& body, const std::string& hdr) {
+            return w.request("POST", "/api/tags/" + name, hdr, body);
+        };
+
+        real = 21.5f;
+        std::string r = post("Temp", "{\"value\":42.25}", op);
+        check(has(r, "200 OK") && real == 42.25f, "an operator writes a REAL");
+        check(has(Web::body(r), "\"value\":42.25,\"writable\":true,\"webWritable\":true,\"min\":-20,\"max\":80"),
+              "the answer: the tag now, with its limits");
+        check(audit.log == "op Temp 21.5->42.25;", "audited: who, what, from, to");
+
+        check(has(post("Temp", "{\"value\":81}", op), "422") && real == 42.25f, "above the list's limit: 422, unchanged");
+        check(has(post("Temp", "{\"value\":\"hot\"}", op), "422"), "not a number: 422");
+        check(has(post("Temp", "{\"nothing\":1}", op), "400"), "no value: 400");
+        check(has(post("Temp", "{\"value\":1}", "Cookie: " + ck + "\r\nContent-Type: application/json\r\n"), "403") &&
+                  real == 42.25f,
+              "no CSRF token: 403, unchanged");
+        check(has(post("Temp", "{\"value\":1}", "Content-Type: application/json\r\n"), "401"), "no login: 401");
+        check(has(post("Temp", "{\"value\":1}", "Cookie: " + vck + "\r\nX-CSRF-Token: " + vtok +
+                                                     "\r\nContent-Type: application/json\r\n"), "403") && real == 42.25f,
+              "a viewer: 403, unchanged");
+        check(has(post("Udint", "{\"value\":1}", op), "not writable from the web"), "not on the list: 403");
+        check(has(post("Run", "{\"value\":false}", op), "tag is read-only"), "on the list but read-only in the registry: 403");
+        check(has(post("Motor1", "{\"value\":1}", op), "tag is read-only"), "a STRUCT: 403");
+        check(has(post("Nope", "{\"value\":1}", op), "404"), "no such tag: 404");
+
+        check(has(post("Dint", "{\"value\":-100}", op), "200") && dint == -100, "DINT at its lower limit");
+        check(has(post("Dint", "{\"value\":12.5}", op), "422") && dint == -100, "DINT with a fraction: 422");
+        check(has(post("Int", "{\"value\":-50}", op), "200") && i16 == -50, "INT");
+        check(has(post("Sint", "{\"value\":-129}", op), "422"), "SINT below -128: 422 (its type)");
+        check(has(post("Usint", "{\"value\":-1}", op), "422") && has(post("Usint", "{\"value\":255}", op), "200") &&
+                  usint == 255,
+              "USINT: no negatives, 255 fine");
+        check(has(post("Lint", "{\"value\":-9223372036854775807}", op), "200") && lint == -9223372036854775807LL,
+              "LINT: all 64 bits, exactly");
+        check(has(post("Ulint", "{\"value\":18446744073709551615}", op), "200") && ulint == 18446744073709551615ull,
+              "ULINT: the largest");
+        check(has(post("Ulint", "{\"value\":18446744073709551616}", op), "422"), "ULINT overflow: 422");
+        check(has(post("Lreal", "{\"value\":-0.5}", op), "200") && lreal == -0.5, "LREAL");
+        check(has(post("Temp", "value=12", "Cookie: " + ck + "\r\nX-CSRF-Token: " + tok +
+                                        "\r\nContent-Type: application/x-www-form-urlencoded\r\n"), "200") &&
+                  real == 12.0f,
+              "a form works too");
+
+        const std::string list = Web::body(w.get("/api/tags"));
+        check(has(list, "\"name\":\"Temp\",\"type\":\"REAL\",\"value\":12,\"writable\":true,\"webWritable\":true") &&
+                  has(list, "{\"name\":\"Udint\",\"type\":\"UDINT\",\"value\":4000000000,\"writable\":true}"),
+              "GET marks the web-writable tags only");
+
+        PlcTagWebApi::Config locked = pc;
+        locked.readRole = WebRole::Viewer;
+        PlcTagWebApi privateApi(reg, locked);
+        Web w2;
+        w2.conn.setSecure(true);
+        privateApi.attach(w2.routes);
+        check(has(w2.get("/api/tags"), "401"), "readRole Viewer: no login, no tags");
+        check(has(w2.request("GET", "/api/tags", "Cookie: " + vck + "\r\n"), "200 OK"), "a viewer's session: the tags");
+
+        PlcTagWebApi readOnly(reg);
+        Web w3;
+        readOnly.attach(w3.routes);
+        check(has(w3.request("POST", "/api/tags/Temp", "Content-Type: application/json\r\n", "{\"value\":1}"), "405"),
+              "no WebAuth: no POST route at all");
     }
 
     std::printf("default page\n");

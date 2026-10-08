@@ -13,7 +13,8 @@ iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
                          lwIP or OS sockets, DHCP, DNS, SNTP), MQTT and HTTP
                          clients, a web server that serves files
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server,
-                         the tags as read-only JSON for the web server
+                         the tags as JSON for the web server (writes over
+                         HTTPS with logins)
 iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
 iRadio/                  radios: the Davis ISS receiver on an RFM69, with
@@ -130,8 +131,15 @@ older style) and `SensorStateMachine`.
 - `Lwip_test` builds lwIP 2.2.1 for the PC (its Unix port, loopback netif)
   when iNetTransport is configured with `-DLWIP_DIR=<lwIP source>`
   (`git clone --branch STABLE-2_2_1_RELEASE https://github.com/lwip-tcpip/lwip`).
-- The web is read-only. Writes wait for authentication (see
-  PLCTransport/README.md).
+- HTTPS (`tls/MbedTlsServer`, mbedTLS 3.6, `-DMBEDTLS_DIR`) and logins
+  (`http/WebAuth`, PBKDF2 via `tls/WebPassword`). PLC tag writes need an
+  operator's session, the CSRF token and an allow-list entry
+  (`PlcTagWebApi::Config`). Two locks matter: the TLS server's and
+  WebAuth's (`TlsFreeRtosLock`). mbedTLS's ticket code gets the raw
+  generator, because it already runs under the TLS lock.
+- `Tls_test` needs curl and openssl; `PlcWebSecure_test --serve 120` plus
+  `NODE_PATH=$(npm root -g) node PLCTransport/web/test/ui_test.cjs` drives
+  the built-in page in headless Chromium.
 
 ## How a sensor driver is written
 
@@ -181,7 +189,8 @@ cmake -S <isensor|iTransport|iNetTransport> -B build \
       -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON
 cmake --build build && ctest --test-dir build
 cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST      # builds, no tests
-cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON       # plc_tags, plc_web, 2 tests
+cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON \
+      -DMBEDTLS_DIR=<mbedtls-3.6.2 source>                         # plc_tags, plc_web, 3 tests
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # ssd1306_test, gui_test
 cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
@@ -189,7 +198,8 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 19 tests (its 13 drivers plus itransport's
-tests), iTransport 6, iNetTransport 21 (20 without LWIP_DIR), PLCTransport 2,
+tests), iTransport 6, iNetTransport 23 (with LWIP_DIR and MBEDTLS_DIR),
+PLCTransport 3 (with MBEDTLS_DIR),
 iDisplay 9 (ssd1306_test,
 hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test and itransport's 6), all passing. Each test file also
@@ -309,12 +319,16 @@ STM32L432KC (L4).
     on BSD sockets, tested over the PC's sockets and over lwIP itself.
     The PLC tags as read-only JSON (`PlcTagWebApi`), the UI served from
     files (`HttpStaticFiles`, with a built-in fallback page).
+21. HTTPS and logins on the F207: `MbedTlsServer` behind `iTls.h`,
+    `WebAuth` (sessions, roles, CSRF, lockout), PBKDF2 passwords, and
+    allow-listed PLC tag writes with an audit log.
 
 ## Open items
 
-- Web writes to PLC tags: need authentication first (sessions, roles, an
-  allow-list of tags; TLS or signed requests). Captive portal for Wi-Fi
-  setup on an ESP. Neither is built; see PLCTransport/README.md.
+- Web security: not built yet are a captive portal (Wi-Fi setup on an
+  ESP), users changed at run time (they're compiled in), and file
+  sources on an SD card (FatFs) and SPI flash (LittleFS). HTTPS has not
+  run on an F207: the handshake time there is an estimate.
 - `SocketNetDevice` has not run on an F207 or an ESP32: compiled for
   Cortex-M3 against lwIP 2.2.1 with CubeMX-like options, and run over lwIP
   on a PC. No Xtensa toolchain was used for the ESP32.

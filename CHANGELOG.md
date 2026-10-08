@@ -10,6 +10,47 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- HTTPS and logins for the web server, for the STM32F207 on its own
+  Ethernet.
+  - `iNetTransport/tls/`: `MbedTlsServer`, a TLS 1.2 server on mbedTLS 3.6
+    behind a new seam (`inc/iTls.h`), so `xHttpServer` gets HTTPS from
+    `Config::tls` without seeing mbedTLS. It offers only ECDHE-ECDSA with
+    AES-GCM or ChaCha20-Poly1305, uses X25519 or P-256 for the key
+    exchange, and supports session tickets. The random generator and
+    ticket keys are shared under a lock; the record buffers are taken
+    from the heap per connection.
+  - Also in `tls/`: `config/inet_mbedtls_config.h` (sized for the F207),
+    `mbedtls.cmake` (mbedTLS built from `MBEDTLS_DIR`), `WebPassword`
+    (PBKDF2-HMAC-SHA256), `TlsFreeRtos.h` (locks, and mbedTLS's heap on
+    FreeRTOS), and `hw/stm32/src/TlsStm32Rng.cpp` (entropy from the MCU's
+    RNG).
+  - `http/WebAuth`: logins and sessions. Passwords are checked by hash; the
+    session cookie is HttpOnly, SameSite=Strict and Secure; roles are
+    viewer, operator and admin. Writes need a CSRF token and an
+    acceptable Origin. Sessions expire when idle and after a maximum age.
+    Repeated failures lock the user out, doubling each time. Timing
+    doesn't reveal which user names exist, and logins are HTTPS-only by
+    default.
+  - `http/HttpJson` (top-level members of a small JSON body) and
+    `http/HttpRedirect` (`HttpsRedirect`: port 80 sends browsers on).
+  - `PlcTagWebApi` writes: `POST /api/tags/<name>`, for the configured
+    role with the CSRF token, to allow-listed tags within their limits,
+    each one audited. Values are checked against the tag's type, with
+    64-bit integers exact. `readRole` can require a login to read. The
+    built-in page gained a login and Set controls.
+  - Tools: `tools/make_web_cert.sh` (your own certificate authority and
+    device certificates, ECDSA P-256) and `tools/web_user.py` (WebUser
+    entries).
+  - Tests: `WebAuth_test` (54 checks), `Tls_test` (31: HTTPS over real
+    sockets with curl and openssl s_client), the write checks in
+    `PlcTagWebApi_test` (46 in all), and `PlcWebSecure_test` (17: end to
+    end over HTTPS). The built-in page was driven in headless Chromium
+    (`web/test/ui_test.cjs`, 17 checks; not in ctest). `Tls_test` and
+    `WebAuth_test` pass under TSan and ASan/UBSan (mbedTLS built with
+    them too), and `Tls_test` passed 16 runs four at a time.
+  - Compiled for Cortex-M3 against the F2 HAL, FreeRTOS and lwIP headers:
+    HTTPS with PBKDF2 is about 74 KB of flash. A connection took 24 KB of
+    heap at its peak on a PC. Not run on an F207.
 - The web server and clients on lwIP: `iNetTransport/sockets/`.
   - `SocketNetDevice`, an `iEthernetDevice` on a BSD socket API: lwIP's
     (`INET_SOCKETS_LWIP`; an STM32F207 with its own MAC, or an ESP32), or
@@ -242,6 +283,10 @@ pull request, newest first.
   ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
+- `xHttpServer::Config::tls`: HTTPS. With it, the client thread does the
+  handshake first. `Stats::tlsFailures` counts failed handshakes, and
+  `HttpRequest::secure()` says a request came over TLS
+  (`HttpConnection::setSecure()`).
 - `PlcTagRegistry::snapshot()`: copies tags out under the lock (by page or
   by name, without making a `std::string`), for code that mustn't hold the
   lock while it works.

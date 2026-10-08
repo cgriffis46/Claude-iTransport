@@ -16,6 +16,8 @@ public:
     const char* path() const { return path_; }       // percent-decoded, no query: "/a b"
     const char* query() const { return query_; }     // raw, after '?'; "" if none
     bool        http11() const { return minor_ >= 1; }
+    // Arrived over TLS (an xHttpServer with Config::tls).
+    bool        secure() const { return secure_; }
 
     // The first header of that name (any case), or nullptr.
     const char* header(const char* name) const;
@@ -44,6 +46,7 @@ private:
     HttpMethod  method_ = HttpMethod::Other;
     char        methodName_[8] = {};
     uint8_t     minor_ = 1;
+    bool        secure_ = false;
     const char* target_ = "";
     const char* path_ = "";
     const char* query_ = "";

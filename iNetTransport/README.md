@@ -353,7 +353,8 @@ How a request flows:
   about 400 B) and about 600 B of state, allocated in `begin()`. A client
   thread's stack (`stackWords`, 3 KB) only exists while that client is
   connected. On the target the code is about 8 KB (`-Os`, Cortex-M4),
-  plus newlib's `vsnprintf` if `printf()` is used. No TLS, no files.
+  plus newlib's `vsnprintf` if `printf()` is used. HTTPS: see "HTTPS and
+  logins"; files: see "The web UI from files".
 
 ### The web UI from files
 
@@ -382,6 +383,88 @@ web.get("/*", HttpStaticFiles::handler, &site);
   wired to a file system (FatFs on an SD card, LittleFS on SPI flash).
   Alternatively, write an `HttpFileSource` straight on that file system:
   three methods (open, read at an offset, close).
+
+## HTTPS and logins
+
+```cpp
+// Once, at start-up (an STM32F207 with its RNG enabled in CubeMX; build
+// with MBEDTLS_DIR and INET_TLS_HARDWARE_RNG, and compile
+// hw/stm32/src/TlsStm32Rng.cpp into the application).
+tlsUseFreeRtosHeap();
+static TlsFreeRtosLock tlsLock, authLock;
+
+MbedTlsServer::Config t;
+t.certPem = webCertPem;                 // from tools/make_web_cert.sh
+t.keyPem = webKeyPem;
+t.sessions = 2;
+t.lock = &tlsLock;
+static MbedTlsServer tls(t);
+tls.begin();
+
+static const WebUser users[] = {        // from tools/web_user.py
+    {"ann", WebRole::Operator, 20000, {/* salt */}, {/* hash */}},
+};
+WebAuth::Config a;
+a.users = users;  a.userCount = 1;
+a.verify = WebPassword::verify;
+a.random = MbedTlsServer::randomFn;  a.randomCtx = &tls;
+a.now = [](void*) { return static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS); };
+a.lock = &authLock;
+static WebAuth auth(a);
+
+xHttpServer::Config w;
+w.port = 443;  w.maxClients = 2;  w.tls = &tls;
+static xHttpServer web(eth, w);
+auth.attach(web);                       // /api/login, /api/logout, /api/session
+// ... routes; a handler that changes something asks
+//     auth.require(req, res, WebRole::Operator, true)
+
+static HttpsRedirect toHttps(443);      // and port 80 only sends browsers on
+static xHttpServer plain(eth, plainConfig);
+plain.get("/*", HttpsRedirect::handler, &toHttps);
+```
+
+**TLS** (`tls/MbedTlsServer`, mbedTLS 3.6 with `tls/config/inet_mbedtls_config.h`):
+- TLS 1.2 only, with ECDHE-ECDSA and AES-128/256-GCM or
+  ChaCha20-Poly1305: forward secrecy, nothing older. The key exchange
+  uses X25519 or P-256, and the certificate is ECDSA P-256. curl,
+  OpenSSL and Chromium all connect; TLS 1.0/1.1 and non-forward-secret
+  suites are refused.
+- Session tickets: a returning browser skips the expensive key exchange.
+- Memory: a connection's buffers (24 KB at the peak, measured on a PC)
+  come from the FreeRTOS heap while it is open, and all go back at close.
+  The server keeps about 4 KB in between. `sessions` caps how many
+  connections are open at once. A third browser waits, or is closed and
+  retries.
+- Flash: about 74 KB on a Cortex-M3 for TLS and PBKDF2 (mbedTLS's
+  lookup tables in flash, not RAM).
+- Speed: the F207 has no crypto accelerator, so each new connection's
+  key exchange is estimated at about a second. That hasn't been measured
+  on the chip.
+- Randomness: `TlsStm32Rng.cpp` feeds mbedTLS from the MCU's true random
+  number generator. On a PC, the operating system's.
+- Certificates: `tools/make_web_cert.sh` makes an authority of your own,
+  once, and a certificate per device. Install the authority's `ca.crt` on
+  the operators' machines and browsers trust every device without a
+  warning. Keep `ca.key` offline. The device key is compiled into the
+  firmware: turn on the flash's read protection (RDP level 1) so it can't
+  be read out over SWD.
+
+**Logins** (`http/WebAuth`):
+- Passwords are stored only as PBKDF2-HMAC-SHA256 hashes, salted
+  (`tools/web_user.py`). The iteration count sets how slow each check is.
+- A login returns a session cookie: 32 random bytes, `HttpOnly`,
+  `SameSite=Strict`, `Secure`. It also returns a CSRF token, which every
+  state-changing request must send back as `X-CSRF-Token`, and a foreign
+  `Origin` is refused.
+- Roles: viewer, operator, admin. `require()` answers 401 or 403 itself.
+- Sessions end after 15 minutes idle or 8 hours in all (both
+  configurable). The least recently used one makes way when all 8 slots
+  are in use.
+- Five wrong passwords lock that user out for a minute, doubling up to 15
+  minutes. An unknown user name costs as much time as a wrong password,
+  so names can't be guessed by timing.
+- By default, logins are refused unless they come over HTTPS.
 
 ## Using it
 
@@ -531,6 +614,17 @@ cmake --build build && ctest --test-dir build
   UDP. It covers `xHttpServer` to `xHttpClient` (an 84 KB chunked page,
   keep-alive, three slow requests at once), 256 KB echoed through
   `xClient`, DNS and SNTP, and the link going down and up.
+- `WebAuth_test`: `HttpJson`, and logins as JSON and forms. Also the
+  cookie's attributes, roles, CSRF tokens and Origin, idle and absolute
+  expiry, logout, the lockout and its doubling, timing for unknown names,
+  refusal over plain HTTP, eviction when full, and eight threads at once.
+- `Tls_test` (with `-DMBEDTLS_DIR`): HTTPS over the host's sockets, checked
+  with curl and `openssl s_client`. It covers PBKDF2 test vectors and
+  `tools/web_user.py`'s output, certificate checking, TLS 1.2 with the
+  intended suites and X25519, refusal of TLS 1.0/1.1, plain HTTP and
+  non-forward-secret suites, ticket resumption, the port 80 redirect, a
+  login and a protected write, 111 KB streamed, two connections at once,
+  and the heap per connection.
 - `xNet_test`: the real FreeRTOS-layer sources on real threads, against a
   FreeRTOS simulation (`test/stub`), with both drivers. It covers blocking
   reads and their timeouts, 20 KB each way, a close waking a sleeping

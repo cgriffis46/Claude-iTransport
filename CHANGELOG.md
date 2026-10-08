@@ -13,35 +13,43 @@ pull request, newest first.
 - `iNetTransport/dns/DnsClient`: a DNS client written as pure logic, for
   one A-record lookup at a time. It checks the reply's ID and question,
   follows CNAMEs and retries three times over 10 s. Host test with 27
-  checks.
+  checks
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 - `iNetTransport/sntp/SntpClient`: an SNTP client written as pure logic.
   It checks a random nonce, rejects kiss-o'-death and unsynchronised
   servers, halves the round trip and handles the 2036 rollover. Host test
-  with 22 checks.
+  with 22 checks
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 - `xNetInterface::resolve()` (DNS, sleeping for the answer; `"a.b.c.d"`
   answered at once), `syncTime()`, `timeValid()` and `unixTimeMs()`. The
   time is set as soon as there is an address and kept by re-syncing every
   `Config::ntpIntervalMs` (an hour by default). It uses the NTP server
-  DHCP names, else `Config::ntpServer` (`pool.ntp.org`).
+  DHCP names, else `Config::ntpServer` (`pool.ntp.org`)
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 - `iNetDevice::resolve()` / `requestTime()`, and
   `iNetDeviceHost::resolved()` / `timeReceived()`. The W5500 driver runs
   DnsClient and SntpClient on its UDP service socket. The ESP-AT driver
   uses the module's `AT+CIPDOMAIN` and SNTP (`AT+CIPSNTPCFG`,
-  `AT+CIPSNTPTIME?`).
+  `AT+CIPSNTPTIME?`)
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 - DHCP asks for and keeps the network's NTP server (option 42), in the
-  new `NetConfig::ntp`. `IpAddress::parse()` and `format()`.
+  new `NetConfig::ntp`. `IpAddress::parse()` and `format()`
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 - Bring-up firmware: a DNS lookup and the time after the address, UTC on
   the stats line, and an RFC 868 time service on TCP 37. `net_bringup.py`
-  compares the board's clock with the PC's.
+  compares the board's clock with the PC's
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
 - W5500: socket 7 is now a UDP service socket for DHCP, DNS and SNTP,
   open whenever it is kept back, with a static address too.
   `w5500_param_t::dhcp` is now `serviceSocket`, `dhcpSeed` is now `seed`,
-  and `w5500_dhcp_socket` is now `w5500_service_socket`.
+  and `w5500_dhcp_socket` is now `w5500_service_socket`
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 - `iNetDevice` has two more pure virtual functions, so a chip driver
   written outside this repository needs `resolve()` and `requestTime()`.
-  They may simply return false.
+  They may simply return false
+  ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 ### 2026-10-07
 

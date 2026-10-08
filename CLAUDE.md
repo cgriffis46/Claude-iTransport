@@ -84,9 +84,10 @@ older style) and `SensorStateMachine`.
 
 ### iRadio
 - `davis/` pure logic (`davis_protocol` library): `DavisProtocol` (hop
-  tables, `intervalSixteenths()`, `reverseBits()`, `crc16()`,
-  `checkCrc()`, `decode()`), `DavisSchedule` (per-station sync, misses,
-  discovery; times in 1/16 ms, signed differences), `DavisWeather`.
+  tables, `intervalTicks()`, `reverseBits()`, `crc16()`, `checkCrc()`,
+  `decode()`), `DavisSchedule` (per-station sync, misses, discovery;
+  times in the clock's ticks, 1/16 ms by default, signed differences),
+  `DavisWeather`.
 - `davis_rfm69<TTransport>` (header only, `davis/src/davis_rfm69.tpp`):
   a `SensorStateMachine`; register writes are queued as ops and run one
   transfer each. It sets `SPITransport::AddressBit::WriteHigh` on an

@@ -30,12 +30,14 @@ pull request, newest first.
     (over a single threaded FreeRTOS stand-in). Compiled for Cortex-M4F
     and Cortex-M0+ against the FreeRTOS V11.1.0 headers. Not run on
     hardware.
+  ([#14](https://github.com/cgriffis46/Claude-iTransport/pull/14))
 - `iClock` (itransport): a free running counter to time things by, readable
   from an interrupt. `Stm32RtcClock`: the STM32 RTC as one, from its
   calendar and subsecond counter on the LSE crystal (`PREDIV_S + 1` ticks
   a second), and `timestamp()` for the RTC's timestamp unit. Host test
   `stm32_rtc_clock_test` against a simulated RTC; compiled against ST's
-  HAL headers for the F407, L432 and L476.
+  HAL headers for the F407, L432 and L476
+  ([#14](https://github.com/cgriffis46/Claude-iTransport/pull/14)).
 - The Davis receiver timed by a clock: `davis_rfm69::setClock()` (the
   schedule then counts in the clock's ticks), `onDio0At()` /
   `onDio0FromISRAt()` for a time latched in hardware (DIO0 on RTC_TS),
@@ -43,11 +45,13 @@ pull request, newest first.
   set while running is seen against the RTOS tick and the schedule moved
   with it; an unexplained jump makes it start over. In the host test, with
   the CPU clock 1 % fast, 1 % of packets are received on the RTOS tick and
-  all of them on the RTC.
+  all of them on the RTC
+  ([#14](https://github.com/cgriffis46/Claude-iTransport/pull/14)).
 - `SPITransport::setAddressBit()`: `AddressBit::WriteHigh` for chips that
   set bit 7 of the address to write (Semtech SX1231 / RFM69, SX127x).
   `ReadHigh`, the old behaviour, stays the default. Five new checks in
-  `itransport_test`.
+  `itransport_test`
+  ([#14](https://github.com/cgriffis46/Claude-iTransport/pull/14)).
 - `iDisplay/hd44780`: a non-blocking HD44780 character LCD driver (16x1
   up to 40x2 and 20x4) behind an I2C port expander, the PCF8574 board or
   Adafruit's MCP23008 backpack, with `xhd44780` for CMSIS-RTOS2. It is an

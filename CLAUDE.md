@@ -10,7 +10,7 @@ iTransport/itransport/   transports: the seam between "how we talk to a chip"
                          and "what the chip means"
 isensor/                 sensor base classes and one folder per sensor driver
 iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
-                         DHCP, DNS, SNTP) and an MQTT client
+                         DHCP, DNS, SNTP), an MQTT client and a web server
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server
 iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
@@ -162,7 +162,7 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 19 tests (its 13 drivers plus itransport's
-tests), iTransport 6, iNetTransport 14, iDisplay 9 (ssd1306_test,
+tests), iTransport 6, iNetTransport 16, iDisplay 9 (ssd1306_test,
 hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test and itransport's 6), all passing. Each test file also
 has a one-line `g++` build command in its header.
@@ -270,6 +270,10 @@ STM32L432KC (L4).
     RTC, with DIO0 latched by the RTC timestamp unit.
 17. MQTT 3.1.1 in iNetTransport: `MqttClient` (pure logic, QoS 0/1) and
     `xMqttClient` (its own thread over an `xClient`, on either interface).
+18. HTTP/1.1 server in iNetTransport: `HttpLexer` cuts the stream into
+    tokens on a FreeRTOS queue, `HttpConnection` (a state machine) builds
+    requests and routes them; `xHttpServer`'s daemon creates a thread per
+    client.
 
 ## Open items
 

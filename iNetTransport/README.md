@@ -5,7 +5,8 @@ for FreeRTOS, with two chip drivers underneath. One is the WIZnet W5500
 (Ethernet over SPI). The other is an Espressif module running ESP-AT
 firmware (Wi-Fi over a UART). There are also DHCP, DNS and SNTP clients,
 so an interface gets its address, looks up names and keeps the time, and
-an MQTT client (`xMqttClient`) that runs over either interface.
+an MQTT client (`xMqttClient`) and a web server (`xHttpServer`) that run
+over either interface.
 Target: STM32L432KC.
 
 ## Layers
@@ -13,6 +14,8 @@ Target: STM32L432KC.
 ```
  user threads   xMqttClient  publish / subscribe / receive    (mqtt/: MqttClient)
                    |       its own thread keeps the session, over an xClient
+                xHttpServer  GET / POST handlers              (http/: lexer, state machine)
+                   |       a daemon thread, and a thread per client, over xClients
                 xClient  connect / listen / accept / read / write / stop
                    |       (each sleeps on its socket's event group, with a timeout)
  hw/freertos    xEthernet / xWifi  ->  xNetInterface
@@ -192,6 +195,77 @@ if (mqtt.receive(buf, sizeof buf, m, 5000)) { /* m.topic, m.payload, m.len */ } 
   subscriptions of up to 64 characters are remembered. On the target the
   code is about 6 KB (`-Os`, Cortex-M4).
 
+## Web server
+
+```cpp
+static void temp(const HttpRequest& req, HttpResponse& res, void*) {
+    res.begin("application/json");
+    res.printf("{\"t\":%.1f}", readTemp());
+}
+static void led(const HttpRequest& req, HttpResponse& res, void*) {
+    char state[8];
+    if (!req.param("state", state, sizeof state)) { res.status(422).send("text/plain", "state?"); return; }
+    setLed(std::strcmp(state, "on") == 0);
+    res.send("text/plain", "ok");
+}
+
+static xHttpServer web(eth, xHttpServer::Config());   // port 80, 2 clients
+web.get("/temp", temp);
+web.post("/led", led);            // form fields or ?state=on
+web.get("/api/*", api);           // a prefix
+web.begin();
+osThreadNew([](void* w) { static_cast<xHttpServer*>(w)->run(); }, &web, &webAttr);
+```
+
+How a request flows:
+
+```
+ socket bytes --> HttpLexer --> FreeRTOS queue --> HttpConnection --> handler
+   (xClient)      a byte at a    of HttpTokens      state machine:     (HttpRequest,
+                  time: method,  (fixed size;       assembles the      HttpResponse)
+                  target, headers, long text in     request, routes,
+                  body by length  pieces)           answers errors
+```
+
+- **Threads.** `run()` is the daemon. It listens on the port, accepts,
+  and creates a thread (`xTaskCreate`) for each client. That thread
+  reads, lexes, parses and runs the handlers, then deletes itself when
+  the connection ends. A handler can block, and only its own client
+  waits. Up to `maxClients` at once (each holds a socket). A W5500 socket
+  listens for one connection at a time. While every client slot is busy,
+  or for the moment between accepting and listening again, new
+  connections are refused (TCP RST), and a browser retries.
+- **Tokens.** `strtok()` won't do for a socket: it needs the whole text
+  in one NUL-terminated buffer and writes into it, while a request
+  arrives in pieces split anywhere. `HttpLexer` is a state machine over
+  the request grammar instead, fed whatever has arrived. It checks the
+  syntax, trims header values, and frames the body by Content-Length.
+  Tokens carry up to 40 bytes; longer text comes as several. When the
+  queue fills, the lexer stops, the state machine empties the queue, and
+  the lexer carries on where it was.
+- **Requests.** HTTP/1.0 and 1.1, keep-alive and pipelining. The method,
+  path (percent-decoded), query, headers and body go into one buffer per
+  client (`requestBytes`). `req.param()` reads the query string and
+  `application/x-www-form-urlencoded` bodies. `Expect: 100-continue` is
+  answered. Request bodies need a Content-Length (chunked uploads get
+  501).
+- **Responses.** `send()` with a length, or `begin()` then
+  `write()`/`print()`/`printf()` to stream. Streamed responses are sent
+  chunked to HTTP/1.1 clients, and end with the connection for HTTP/1.0
+  ones. HEAD goes to the GET handler, without the body. A handler that
+  answers nothing gets a 500.
+- **Answered by the server:** 400 (malformed, or HTTP/1.1 without Host),
+  404, 405 (with Allow), 408 (`requestTimeoutMs` from a request's first
+  byte), 413 (body over `requestBytes`, before it is read), 414, 417, 431,
+  501, 503 (no thread could be created) and 505. Every error closes the
+  connection except 404 and 405. Idle kept connections close after
+  `idleTimeoutMs`.
+- **RAM per client:** `requestBytes` (2 KB) plus the token queue (8 tokens,
+  about 400 B) and about 600 B of state, allocated in `begin()`. A client
+  thread's stack (`stackWords`, 3 KB) only exists while that client is
+  connected. On the target the code is about 8 KB (`-Os`, Cortex-M4),
+  plus newlib's `vsnprintf` if `printf()` is used. No TLS, no files.
+
 ## Using it
 
 Ethernet, from a CubeMX project (complete in
@@ -300,6 +374,19 @@ cmake --build build && ctest --test-dir build
   (reconnect, re-subscribe, DUP resend), a refused connection with backoff
   and store and forward, keepalive, callback mode (publishing from the
   callback), a full inbox, and four threads publishing at once.
+- `Http_test`: the lexer whole, a byte at a time and in random pieces,
+  through a queue of one; long tokens in pieces; malformed requests (each
+  with its status); then requests end to end. That covers routing,
+  prefixes, HEAD, 404/405, forms and queries, chunked streaming,
+  pipelining, HTTP/1.0 and Connection, `maxRequests`, every error status,
+  `100-continue`, absolute-form targets, timeouts and a failing output.
+- `xHttp_test`: `xHttpServer` on real threads over the W5500 driver, with
+  simulated browsers on the chip's far end. It covers a thread created per
+  connection, pipelining, a form arriving slowly in pieces, a 14 KB
+  streamed page, 413, three clients at once (slow handlers in parallel
+  without holding up a fast one, nothing listening while all are busy),
+  a closed connection freeing its slot, idle and request timeouts, a
+  thread that can't be created (503), and `stop()` ending every thread.
 - `xNet_test`: the real FreeRTOS-layer sources on real threads, against a
   FreeRTOS simulation (`test/stub`), with both drivers. It covers blocking
   reads and their timeouts, 20 KB each way, a close waking a sleeping

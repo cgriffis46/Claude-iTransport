@@ -7,6 +7,8 @@
 #                            buffers and event groups
 #   dhcp/ dns/ sntp/ mqtt/   DHCP, DNS, SNTP and MQTT clients as pure logic,
 #                            each with a host test
+#   http/                    an HTTP/1.1 server's pure logic: lexer (token
+#                            stream), request state machine, routes, responses
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
@@ -73,6 +75,8 @@ set(XNET_SOURCES
     hw/freertos/src/xClient.cpp
     hw/freertos/inc/xMqttClient.h
     hw/freertos/src/xMqttClient.cpp
+    hw/freertos/inc/xHttpServer.h
+    hw/freertos/src/xHttpServer.cpp
 )
 if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
     add_library(xnet STATIC ${XNET_SOURCES})
@@ -82,7 +86,7 @@ if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
     )
     target_compile_features(xnet PUBLIC cxx_std_17)
     set_target_properties(xnet PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${INET_LIB_DIR})
-    target_link_libraries(xnet PUBLIC inet_core inet_mqtt)
+    target_link_libraries(xnet PUBLIC inet_core inet_mqtt inet_http)
 endif()
 
 # --- DHCP, DNS, SNTP and the chip drivers ----------------------------------
@@ -90,6 +94,7 @@ add_subdirectory(dhcp)
 add_subdirectory(dns)
 add_subdirectory(sntp)
 add_subdirectory(mqtt)
+add_subdirectory(http)
 add_subdirectory(w5500)
 add_subdirectory(espat)
 
@@ -105,7 +110,7 @@ if(SENSOR_FW_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
         ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
     )
-    target_link_libraries(xNet_test PRIVATE w5500_driver espat_driver inet_mqtt Threads::Threads)
+    target_link_libraries(xNet_test PRIVATE w5500_driver espat_driver inet_mqtt inet_http Threads::Threads)
     add_test(NAME xNet_test COMMAND xNet_test)
 
     # xMqttClient on real threads: the MQTT thread and the W5500's driver
@@ -116,6 +121,17 @@ if(SENSOR_FW_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
         ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
     )
-    target_link_libraries(xMqtt_test PRIVATE w5500_driver inet_mqtt Threads::Threads)
+    target_link_libraries(xMqtt_test PRIVATE w5500_driver inet_mqtt inet_http Threads::Threads)
     add_test(NAME xMqtt_test COMMAND xMqtt_test)
+
+    # xHttpServer on real threads: the daemon, a thread per client, and
+    # the W5500's driver thread, with simulated browsers at the far end.
+    add_executable(xHttp_test test/xHttp_test.cpp ${XNET_SOURCES})
+    target_include_directories(xHttp_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
+    )
+    target_link_libraries(xHttp_test PRIVATE w5500_driver inet_mqtt inet_http Threads::Threads)
+    add_test(NAME xHttp_test COMMAND xHttp_test)
 endif()

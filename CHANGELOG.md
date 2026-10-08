@@ -10,6 +10,36 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- HTTP/1.1 web server in `iNetTransport/`, for GET, POST and the other
+  methods, on either interface.
+  - `http/HttpLexer`: cuts the request stream into fixed-size tokens
+    (method, target, version, header name and value, body, end), a byte at
+    a time, so a request can arrive in any pieces. It checks the syntax
+    and frames bodies by Content-Length. When the token queue is full it
+    stops and resumes.
+  - `http/HttpConnection`: a state machine that builds each request from
+    the tokens into one buffer per client. It routes the request
+    (`HttpRoutes`: exact paths and prefixes, HEAD to GET, 404 and 405 with
+    Allow) and makes sure it is answered. It also answers malformed,
+    oversized and unsupported requests itself (400, 408, 413, 414, 417,
+    431, 501, 505). It handles keep-alive, pipelining, HTTP/1.0 and
+    `Expect: 100-continue`.
+  - `http/HttpRequest` (decoded path, query, headers, body, `param()` for
+    queries and urlencoded forms) and `http/HttpResponse` (`send()`, or a
+    streamed `begin()`/`write()`/`printf()`, sent chunked to HTTP/1.1
+    clients).
+  - `hw/freertos/xHttpServer`: a daemon thread that accepts and creates a
+    thread for each client. That thread lexes into a FreeRTOS queue,
+    parses and runs the handlers. It handles idle and request timeouts,
+    up to `maxClients` at once, 503 when no thread can be created, and a
+    `stop()` that ends every thread.
+  - Host tests: `Http_test` (52 checks) and `xHttp_test` (43 checks, real
+    threads over the W5500 driver, simulated browsers on the chip's far
+    end). `xHttp_test` passes under ASan/UBSan and TSan and passed 20
+    runs under load. Compiled for Cortex-M4 as C++14. Not run on
+    hardware or against a real browser.
+  - The FreeRTOS host stand-in (`test/stub`) gained `xTaskCreate` (a
+    std::thread), `vTaskDelete`, counting semaphores and `xQueueReset`.
 - MQTT 3.1.1 client in `iNetTransport/`, QoS 0 and 1, no TLS.
   - `mqtt/MqttClient`: the protocol as pure logic, allocating nothing.
     It covers CONNECT (credentials, will, keepalive, clean session),

@@ -10,6 +10,31 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- `iDisplay/`: a new module for displays and a GUI to run on them.
+  - `display_core`: `iTextSurface` (a grid of character cells, so the
+    same menus run on a graphic or character display), `MonoCanvas` (a
+    1 bit frame buffer in the SSD1306 page layout with pixels, lines,
+    rectangles and text), a 5x7 font with a degree sign, and the
+    `iDisplayDevice` interface.
+  - `ssd1306/`: a non-blocking SSD1306 128x64 / 128x32 driver on
+    `SensorStateMachine`, over I2C (`ssd1306`) or 4-wire SPI with a D/C
+    pin (`ssd1306_spi`), and `xssd1306` for CMSIS-RTOS2. It sends only the
+    pages that changed, and powers up again and repaints by itself
+    after a failure. Host test with 47 checks.
+  - `gui/`: `xScreen`, `xGuiCore` (the screen stack), `xMenu` /
+    `xMenuScreen`, `xYesNoField`, `xChoiceField`, `xTextField` and
+    `xButton` (debounce, safe in an interrupt), ported from the
+    `xDisplay` classes in FeatherM0_Davis_ISS_Ethernet. Fixed on the
+    way: menu scrolling, submenus, text field bounds, and the release
+    check of two of the buttons.
+  - `hw/freertos/`: `xGui`, the GUI task, and `xGuiButton`
+    (CMSIS-RTOS2). Buttons only post to a one-event queue, and the task
+    only acts on events from it. Host test with 86 checks over a
+    simulated queue.
+  - Compiled for Cortex-M4 and Cortex-M0+ with `arm-none-eabi-g++ 13.3`
+    (`-std=gnu++14 -fno-exceptions -fno-rtti`). Not run on hardware.
+
+#### Added
 - `iNetTransport/dns/DnsClient`: a DNS client written as pure logic, for
   one A-record lookup at a time. It checks the reply's ID and question,
   follows CNAMEs and retries three times over 10 s. Host test with 27

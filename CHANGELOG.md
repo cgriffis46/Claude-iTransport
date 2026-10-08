@@ -28,11 +28,13 @@ pull request, newest first.
     built for the PC, with `-DLWIP_DIR`). Both pass under ASan/UBSan, and
     `SocketNetDevice_test` also under TSan. Compiled for Cortex-M3 with
     lwIP's FreeRTOS port. Not run on an F207 or an ESP32.
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - `http/HttpFiles`: the web UI from files instead of the firmware.
   `HttpStaticFiles` (index.html, types by extension, `.gz` when the
   browser takes gzip, `no-cache`, a fallback source, `..` refused) over
   `HttpFileSource`: `HttpStdioFiles` (`FILE*`) and `HttpMemoryFiles`.
   Host test `HttpFiles_test` (17 checks).
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - `PLCTransport/web/`: the tag database as read-only JSON (`PlcTagWebApi`:
   `GET /api/tags`, `?names=`, `/api/tags/<name>`; every CIP elementary
   type, STRUCT as hex) and a built-in page that polls it
@@ -41,6 +43,7 @@ pull request, newest first.
   `PlcTagWebApi_test` (18 checks) and `PlcWebServer_test` (8 checks, end
   to end over sockets, with curl and Python's JSON parser). PLCTransport gained
   `SENSOR_FW_BUILD_TESTS` and a README with the web security plan.
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - HTTP/1.1 client in `iNetTransport/`, for a node sending its data out.
   - `HttpLexer` has a Response mode. It handles status lines, chunked
     bodies (decoded; extensions and trailers skipped), bodies that run to
@@ -63,6 +66,7 @@ pull request, newest first.
     pass under ASan/UBSan, and `xHttpClient_test` also under TSan; it
     passed 20 runs under load. Compiled for Cortex-M4 as C++14. Not run on
     hardware or against a real server.
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - HTTP/1.1 web server in `iNetTransport/`, for GET, POST and the other
   methods, on either interface.
   - `http/HttpLexer`: cuts the request stream into fixed-size tokens
@@ -93,6 +97,7 @@ pull request, newest first.
     hardware or against a real browser.
   - The FreeRTOS host stand-in (`test/stub`) gained `xTaskCreate` (a
     std::thread), `vTaskDelete`, counting semaphores and `xQueueReset`.
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - MQTT 3.1.1 client in `iNetTransport/`, QoS 0 and 1, no TLS.
   - `mqtt/MqttClient`: the protocol as pure logic, allocating nothing.
     It covers CONNECT (credentials, will, keepalive, clean session),
@@ -240,12 +245,15 @@ pull request, newest first.
 - `PlcTagRegistry::snapshot()`: copies tags out under the lock (by page or
   by name, without making a `std::string`), for code that mustn't hold the
   lock while it works.
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - `HttpRoutes::on()`, the same as `add()`, so route-adding code takes an
   `xHttpServer` or an `HttpRoutes`.
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - The STM32L432KC bring-up firmware builds one network interface, the
   W5500 or the ESP module: `BRINGUP_ETH` and `BRINGUP_WIFI` both on (or
   both off) now stops the build. An L432 board has one interface. One
   leaves about 15 KB of RAM free beyond the 34 KB heap; both left 10 KB.
+  ([#16](https://github.com/cgriffis46/Claude-iTransport/pull/16))
 - `xNetInterface::toTicks()` is public, for classes built on an interface
   such as `xMqttClient` ([#15](https://github.com/cgriffis46/Claude-iTransport/pull/15)).
 - `iDisplay`: `kDegreeChar` moved from `Font5x7.h` to `iTextSurface.h`,

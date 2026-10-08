@@ -136,7 +136,23 @@ int main() {
             if (!has(resp, "404") || has(resp, "secret")) { std::printf("    %s served\n", a); all = false; }
         }
         check(all, "nothing outside the folder (.., encoded .., backslash)");
-        check(HttpStaticFiles::safePath("/a..b/c..") && HttpStaticFiles::safePath("/..a"), "names with dots are fine");
+        check(HttpStaticFiles::safePath("/a..b/c..") && HttpStaticFiles::safePath("/a/b.c.d"), "names with dots are fine");
+        writeFile(root + "/www/.secret", "hidden");
+        writeFile(root + "/www/sub/.index.html.part", "half an upload");
+        check(!HttpStaticFiles::safePath("/..a") && !HttpStaticFiles::safePath("/sub/.x") &&
+                  has(w.request("GET /.secret"), "404") && has(w.request("GET /sub/.index.html.part"), "404"),
+              "hidden files (a name starting with '.', such as an upload in progress): 404");
+        {
+            static const uint8_t only3[] = "third";
+            static const HttpMemoryFiles::File third[] = {{"/third.txt", only3, 5}, {"/index.html", only3, 5}};
+            HttpMemoryFiles mem3(third, 2);
+            HttpStaticFiles three(disk, &mem, &mem3);
+            Web w3;
+            w3.routes.on(HttpMethod::Get, "/*", HttpStaticFiles::handler, &three);
+            check(Web::body(w3.request("GET /third.txt")) == "third" && Web::body(w3.request("GET /only.txt")) == kOnly &&
+                      Web::body(w3.request("GET /")) == "<h1>changed</h1>",
+                  "three sources, tried in order");
+        }
         check(has(w.request("GET /missing"), "404"), "missing everywhere: 404");
         check(has(w.request("GET /sub"), "404"), "a folder without its slash: 404");
 

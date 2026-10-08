@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "iLock.h"
 #include "iTls.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
@@ -11,7 +12,7 @@
 
 // A TLS 1.2 server on mbedTLS, for xHttpServer (Config::tls):
 //
-//     static MbedTlsServer::Lock* lock = ...;          // a FreeRTOS mutex: TlsFreeRtos.h
+//     static iLock* lock = ...;                         // a FreeRTOS mutex: TlsFreeRtos.h
 //     MbedTlsServer::Config t;
 //     t.certPem = deviceCertPem;   t.keyPem = deviceKeyPem;   // tools/make_web_cert.sh
 //     t.lock = lock;
@@ -30,12 +31,7 @@ class MbedTlsServer : public iTlsServer {
 public:
     static constexpr uint8_t kMaxSessions = 4;
 
-    class Lock {
-    public:
-        virtual ~Lock() = default;
-        virtual void lock() = 0;
-        virtual void unlock() = 0;
-    };
+    typedef iLock Lock;
 
     struct Config {
         const char*   certPem = nullptr;    // the device's certificate, then any intermediates (PEM)

@@ -10,6 +10,32 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- The web UI on SPI flash or an SD card, uploaded from a browser, so it
+  can change without new firmware. ([#18](https://github.com/cgriffis46/Claude-iTransport/pull/18))
+  - `iNetTransport/storage/`: `SpiNorFlash`, a SPI NOR flash driver over
+    `iBlockTransport` (JEDEC ID and size, 4-byte addresses above 16 MB,
+    block protection cleared, SST26 unlock, pages, 4 KB erase).
+    `LittleFsNor` runs LittleFS on it with static buffers.
+    `HttpLittleFsFiles` and `HttpFatFsFiles` (FatFs, for an SD card) serve
+    the files and take uploads. `LITTLEFS_DIR` builds LittleFS, and
+    `FATFS_DIR` builds the FatFs host test.
+  - `http/HttpFileStore`: uploads arrive in pieces into a hidden
+    `.name.part`, and the commit puts the file in place (atomically on
+    LittleFS). A file being read is never replaced or removed under its
+    reader. The store holds it closed to new readers until those reading
+    it finish.
+  - `http/HttpFileAdmin`: `/api/files` to list, upload (`PUT ?offset=`),
+    commit (`POST ?size=`) and delete. It needs an admin session and the
+    CSRF token, checks paths, enforces a size limit, waits for readers
+    (or answers 503 with Retry-After), and audits every change.
+    `httpFileAdminPage` (`/files.html`) is its page in the firmware.
+  - `inc/iLock.h`: one mutex interface for the file systems, WebAuth and
+    the TLS server.
+  - Tests: `SpiNorFlash_test` (the driver against `test/sim/SimSpiNor.h`;
+    LittleFS with power cuts at every write), `HttpFatFs_test` (FatFs on a
+    RAM disk), `HttpFileAdmin_test`, and `StorageWeb_test` (uploads over
+    HTTPS with curl, and `--serve` for `storage/test/files_ui_test.cjs` in
+    Chromium). ([#18](https://github.com/cgriffis46/Claude-iTransport/pull/18))
 - HTTPS and logins for the web server, for the STM32F207 on its own
   Ethernet.
   - `iNetTransport/tls/`: `MbedTlsServer`, a TLS 1.2 server on mbedTLS 3.6
@@ -284,6 +310,14 @@ pull request, newest first.
   ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
+- `HttpStaticFiles` takes up to three sources, tried in order, so storage
+  can come before the built-in pages. It refuses hidden paths (any part
+  starting with `.`), where uploads in progress are kept, so `/..a` is
+  now refused too. ([#18](https://github.com/cgriffis46/Claude-iTransport/pull/18))
+- `WebAuth::Lock` and `MbedTlsServer::Lock` are now `iLock`, and
+  `TlsFreeRtosLock` is an `iLock`. Code that derives from either still
+  builds. `inet_http` puts `iNetTransport/inc` on the include path for
+  it. ([#18](https://github.com/cgriffis46/Claude-iTransport/pull/18))
 - `xHttpServer::Config::tls`: HTTPS. With it, the client thread does the
   handshake first. `Stats::tlsFailures` counts failed handshakes, and
   `HttpRequest::secure()` says a request came over TLS

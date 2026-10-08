@@ -12,6 +12,8 @@ inc/, src/      display_core
                   iDisplayDevice  what a display driver provides: text(), requestFlush(), main(), idle(), failed()
 ssd1306/        SSD1306 128x64 / 128x32 OLED, over I2C (ssd1306) or 4-wire SPI (ssd1306_spi);
                 xssd1306 sleeps with osDelay() while a transfer is in flight
+hd44780/        HD44780 character LCD (16x1 up to 40x2 and 20x4) behind an I2C expander:
+                the PCF8574 board or Adafruit's MCP23008 backpack; xhd44780 for CMSIS-RTOS2
 gui/            idisplay_gui, no RTOS
                   xScreen, xNavigator  a screen and how it changes the screen shown
                   xGuiCore             the screen stack and what each event does to it
@@ -67,7 +69,6 @@ hw/freertos/    xGui (the GUI task), xGuiButton, and xGuiButtonGroup (the timer 
 #include "xGui.h"
 #include "xMenu.h"
 #include "xFields.h"
-#include "Font5x7.h"     // kDegreeChar
 
 using namespace idisplay;
 using namespace SSD1306;
@@ -122,6 +123,37 @@ void HAL_GPIO_EXTI_Callback(uint16_t pin) { // EXTI on both edges, pull-up, butt
 gui.post(xGuiEvent::refresh());
 ```
 
+## Character LCDs
+
+`hd44780<TTransport, COLS, ROWS>` is the same kind of driver as the SSD1306 one: an
+`iTextSurface` and an `iDisplayDevice`, so every screen, menu and field above runs on it
+unchanged. Swap the display and nothing else:
+
+```cpp
+#include "xhd44780.h"
+using namespace HD44780;
+
+static xhd44780<Stm32HalI2CTransport, 20, 4> lcd(hd44780_pcf8574_param(), &hi2c1, HD44780_PCF8574_ADDR, i2c1Mutex);
+// or Adafruit's backpack:
+// static xhd44780<Stm32HalI2CTransport, 16, 2> lcd(hd44780_adafruit_backpack_param(), &hi2c1, HD44780_MCP23008_ADDR, i2c1Mutex);
+static xGui gui(lcd, homeScreen);
+```
+
+- **What goes on the bus.** It keeps the characters in RAM and sends, row by row, only the
+  run that changed.
+- **No inverse.** A selected menu row is still marked with `>`. The character being edited
+  in a text field gets the LCD's blinking cursor; that's what `iTextSurface::showEditCursor()`
+  is for.
+- **Characters.** The degree sign (`kDegreeChar`) is sent as the LCD's own. `defineChar(slot, rows)`
+  sets up to eight custom characters, shown by characters 1–7 (8 for slot 0).
+- **Other settings.** `setBacklight()` and `setDisplayOn()`.
+- **Pin mapping.** It's a parameter, so a backpack wired differently only needs its own
+  `hd44780_param_t`.
+- **Speed.** Each character is six expander bytes, and the I2C bus time stands in for the
+  HD44780's 40 µs instruction delay, so run the bus at 400 kHz or slower. A full 20-character
+  row takes about 3 ms at 400 kHz.
+- **Not supported.** The direct GPIO wiring and the backpack's SPI (74HC595) side.
+
 ## Porting from FeatherM0_Davis_ISS_Ethernet
 
 These classes started in that sketch's `.ino`. The screens specific to
@@ -159,9 +191,17 @@ cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI
 cmake --build build && ctest --test-dir build
 ```
 
-There are two host tests:
+There are three host tests:
 
 - **`ssd1306_test`** runs the driver against a simulated SSD1306 RAM in three ways: behind a bare `ISensorTransport`, behind the real `I2CTransport`, and over SPI with a D/C pin. It covers the power-up sequence, sending only changed pages, settings, an unplugged chip and recovery, a stuck bus, a refused bus, 128x32, rotation, the SH1106 offset, the tick rollover, and `xssd1306`'s sleeps.
+- **`hd44780_test`** runs the driver against a simulated HD44780 that only sees its pins
+  through a simulated PCF8574, or an MCP23008 behind the real `I2CTransport`. The simulated
+  LCD starts in 8-bit mode, takes nibbles as E falls, and flags any instruction sent too early
+  (the 40 ms power-up, 4.1 ms after the first reset nibble, during a clear) and any RS or data
+  change at an E edge. It covers 20x4, 16x2, 16x1 and 40x2, sending only what changed, the edit
+  cursor, backlight, display off, custom characters, an unplugged backpack and recovery, a
+  stuck or refused bus, the tick rollover, and `xhd44780`'s sleeps. Breaking the driver's
+  timing, nibble order or MCP23008 setup on purpose makes it fail.
 - **`gui_test`** covers text and canvas drawing, the screen stack, menu scrolling and navigation, the three fields, button debouncing, long press and auto-repeat (including the tick rollover and a
   late tick), `Held`/`Repeat` in menus and fields, and `xGui` and `xGuiButtonGroup` over a simulated
   one-slot queue and timer. That last part includes dropped presses and repeats, refresh, and a failed display.

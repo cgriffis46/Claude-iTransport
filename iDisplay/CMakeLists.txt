@@ -98,7 +98,7 @@ if(NOT CMSIS_RTOS_INCLUDE_DIR STREQUAL "")
 endif()
 
 # --- Display drivers ---------------------------------------------------------
-foreach(display_dir ssd1306)
+foreach(display_dir ssd1306 hd44780)
     add_subdirectory(${display_dir})
 endforeach()
 

@@ -156,6 +156,7 @@ void xTextField::render(iTextSurface& s) const {
     const bool wasInverse = s.inverse();
     for (uint8_t i = first; i < (uint8_t)(first + width); ++i) {
         if (i == pos_) {
+            s.showEditCursor(s.cursorCol(), s.cursorRow());
             s.setInverse(true);
             s.putChar(glyphFor(cand_));
             s.setInverse(wasInverse);

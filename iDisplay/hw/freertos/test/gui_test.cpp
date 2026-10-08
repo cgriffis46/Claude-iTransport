@@ -53,6 +53,8 @@ public:
         return s;
     }
     bool inverseAt(uint8_t c, uint8_t r) const { return inv[r * cols() + c]; }
+    void showEditCursor(uint8_t c, uint8_t r) override { editCol = c; editRow = r; }
+    int editCol = -1, editRow = -1;
 protected:
     void drawCell(uint8_t c, uint8_t r, char ch, bool inverse) override {
         cells[r * cols() + c] = ch;
@@ -293,6 +295,7 @@ static void fields() {
     FakeText narrow(8, 1);
     narrow.setCursor(2, 0);
     longer.render(narrow);
+    check(narrow.editCol == 7 && narrow.editRow == 0, "and marks that cell for a display without inverse");
     check(narrow.row(0) == "  ROUNDS" && narrow.inverseAt(7, 0) && !narrow.inverseAt(6, 0), "scrolled: the cursor on the last column");
 }
 

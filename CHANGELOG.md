@@ -10,6 +10,19 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- `iDisplay/hd44780`: a non-blocking HD44780 character LCD driver (16x1
+  up to 40x2 and 20x4) behind an I2C port expander, the PCF8574 board or
+  Adafruit's MCP23008 backpack, with `xhd44780` for CMSIS-RTOS2. It is an
+  `iTextSurface` and an `iDisplayDevice`, so the GUI runs on it
+  unchanged. It sends only the characters that changed, keeps the
+  datasheet's power-up, reset and clear waits, and recovers by itself,
+  custom characters included. Backlight, display on/off and eight custom
+  characters. Host test with 39 checks against a simulated LCD that
+  flags timing and E-edge setup violations.
+- `iTextSurface::showEditCursor()`: `xTextField` marks the cell it is
+  editing, which a character LCD shows with its blinking cursor, as it
+  cannot draw inverse.
+
 - `iDisplay`: long press and auto-repeat buttons. `xButtonConfig` makes a
   button plain, long press (a short press is `Pressed` on release, a long
   one is `Held`, never both) or auto-repeat (`Pressed`, then `Repeat`
@@ -40,8 +53,6 @@ pull request, newest first.
     simulated queue.
   - Compiled for Cortex-M4 and Cortex-M0+ with `arm-none-eabi-g++ 13.3`
     (`-std=gnu++14 -fno-exceptions -fno-rtti`). Not run on hardware.
-
-#### Added
 - `iNetTransport/dns/DnsClient`: a DNS client written as pure logic, for
   one A-record lookup at a time. It checks the reply's ID and question,
   follows CNAMEs and retries three times over 10 s. Host test with 27
@@ -73,6 +84,8 @@ pull request, newest first.
   ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
+- `iDisplay`: `kDegreeChar` moved from `Font5x7.h` to `iTextSurface.h`,
+  as every surface uses it.
 - W5500: socket 7 is now a UDP service socket for DHCP, DNS and SNTP,
   open whenever it is kept back, with a static address too.
   `w5500_param_t::dhcp` is now `serviceSocket`, `dhcpSeed` is now `seed`,

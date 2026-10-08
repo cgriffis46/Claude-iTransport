@@ -56,6 +56,12 @@ older style) and `SensorStateMachine`.
   "register" of `writeRegs`), `ssd1306_spi` (D/C pin callback,
   `writeBytes`), `xssd1306*` (osDelay sleeps). Written like a sensor
   driver on `SensorStateMachine`. It sends only pages whose hash changed.
+- `hd44780/`: `hd44780<TTransport, COLS, ROWS>` behind a PCF8574 (`writeBytes`) or
+  MCP23008 (IOCON.SEQOP, then `writeRegs(GPIO, ...)`) backpack, 4-bit
+  mode, three expander bytes per nibble. Diffs a shadow character
+  buffer. Shows the text field's cell with the blinking cursor
+  (`iTextSurface::showEditCursor`). Waits are rounded up a tick
+  (1 ms ticks can be short by up to 1 ms). `xhd44780` sleeps with osDelay.
 - `gui/` (no RTOS): `xScreen`/`xNavigator`, `xGuiCore` (screen stack,
   home at the bottom), `xMenu`/`xMenuScreen`, `xYesNoField`,
   `xChoiceField`, `xTextField`, `xButton` (ISR-safe debounce; plain,
@@ -123,8 +129,8 @@ cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 18 tests (its 13 drivers plus itransport's
-tests), iTransport 5, iNetTransport 11, iDisplay 7 (ssd1306_test,
-gui_test and itransport's 5), all passing. Each test file also
+tests), iTransport 5, iNetTransport 11, iDisplay 8 (ssd1306_test,
+hd44780_test, gui_test and itransport's 5), all passing. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
@@ -222,6 +228,7 @@ STM32L432KC (L4).
     `xScreen`) onto CMSIS-RTOS2 for the eventual STM32 port.
 13. Long press and auto-repeat buttons (`Held`, `Repeat`) through
     `xGuiButtonGroup`'s timer.
+14. HD44780 character LCD driver (PCF8574 and MCP23008 backpacks).
 
 ## Open items
 
@@ -234,8 +241,8 @@ STM32L432KC (L4).
   written against ODVA's CIP Safety spec). `Stm32HalCanTransport` needs
   a CubeMX project with CAN enabled, and `SafeZoneJsonPersistence`
   needs nlohmann/json.
-- `iDisplay`: no character LCD driver yet (HD44780 would provide an
-  `iTextSurface` over a shadow character buffer). No inactivity timeout back to home (post `Home` from an
+- `iDisplay`: the HD44780 driver covers the I2C backpacks only (not
+  direct GPIO, not the 74HC595/SPI side). No inactivity timeout back to home (post `Home` from an
   application timer). FeatherM0_Davis_ISS_Ethernet's screens have not
   been moved onto it.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;

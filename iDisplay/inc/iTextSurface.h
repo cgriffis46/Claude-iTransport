@@ -5,6 +5,11 @@ namespace idisplay {
 
 class MonoCanvas;
 
+// The degree sign, on every surface: the 5x7 font draws it, and a
+// character LCD driver sends its own ROM's. print("21.5\x7F") or
+// putChar(kDegreeChar).
+static constexpr char kDegreeChar = '\x7F';
+
 // iTextSurface is what a screen draws on: a grid of character cells,
 // cols() wide and rows() high, with a cursor. A graphic display
 // (MonoCanvas, 6x8 pixel cells) and a character LCD both provide one,
@@ -30,6 +35,12 @@ public:
     // display. A screen can draw graphics when it is there and fall
     // back to text when it is not; there is no RTTI to ask otherwise.
     virtual MonoCanvas* graphics() { return nullptr; }
+
+    // Marks the cell being edited (a text field's cursor). A display
+    // that can draw inverse shows that already and ignores this; a
+    // character LCD, which cannot, puts its blinking cursor there.
+    // clear() takes the mark away.
+    virtual void showEditCursor(uint8_t col, uint8_t row) { (void)col; (void)row; }
 
     void setCursor(uint8_t col, uint8_t row) { col_ = col; row_ = row; }
     uint8_t cursorCol() const { return col_; }

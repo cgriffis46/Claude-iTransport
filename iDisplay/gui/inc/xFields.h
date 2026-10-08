@@ -5,7 +5,10 @@
 
 namespace idisplay {
 
-// What a field made of a key.
+// What a field made of a key. In every field Up and Down step on Pressed
+// and on Repeat (an auto-repeat button held down), Enter on Pressed is
+// done (in xTextField: takes the character), and holding Enter (Held)
+// or Back is cancel.
 enum class xFieldResult : uint8_t {
     None,       // not a key it uses
     Changed,    // the value being edited changed
@@ -66,7 +69,7 @@ private:
 // commands: delete (drawn '<' by default) removes the character before
 // the cursor, and end (drawn '>') finishes, keeping what is before the
 // cursor. Enter takes the character and moves on; on delete or end it
-// does that command. Back cancels.
+// does that command. Back, or holding Enter, cancels.
 //
 // Moving onto a character already in the string shows that character,
 // so an existing value is kept by pressing Enter along it; at the end

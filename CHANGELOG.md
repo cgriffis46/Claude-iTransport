@@ -10,6 +10,13 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- `iDisplay`: long press and auto-repeat buttons. `xButtonConfig` makes a
+  button plain, long press (a short press is `Pressed` on release, a long
+  one is `Held`, never both) or auto-repeat (`Pressed`, then `Repeat`
+  while held). `xGuiButtonGroup` runs the periodic CMSIS-RTOS2 timer that
+  posts `Held` and `Repeat` to the GUI's queue. Menus and fields step on
+  `Repeat`, and holding Enter is back in a menu and cancel in a field.
+  `gui_test` now has 128 checks.
 - `iDisplay/`: a new module for displays and a GUI to run on them.
   - `display_core`: `iTextSurface` (a grid of character cells, so the
     same menus run on a graphic or character display), `MonoCanvas` (a

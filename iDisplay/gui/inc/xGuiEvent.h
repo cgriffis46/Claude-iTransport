@@ -9,7 +9,13 @@ class xScreen;
 // and Enter; Back, Left and Right are there for boards with more.
 enum class xKey : uint8_t { Up, Down, Enter, Back, Left, Right };
 
-enum class xKeyAction : uint8_t { Pressed, Released };
+// What a button did (see xButtonConfig for which a button sends):
+//   Pressed   a press: as it goes down, or, on a long press button, a
+//             short press, sent when it is let go
+//   Released  let go (only when the button reports releases)
+//   Held      a long press button has been down for its long press time
+//   Repeat    an auto-repeat button is still down: step again
+enum class xKeyAction : uint8_t { Pressed, Released, Held, Repeat };
 
 enum class xGuiEventType : uint8_t {
     Key,        // a button: key, action

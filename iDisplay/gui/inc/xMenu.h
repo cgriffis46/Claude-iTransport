@@ -11,9 +11,10 @@ namespace idisplay {
 typedef void (*xMenuAction)(xNavigator& nav, void* ctx);
 
 // A list of items, one per row, that scrolls to keep the selection in
-// view. Up and Down move the selection, Enter chooses it, Back goes
-// back. Each item opens a screen (pushed, so Back returns here), runs
-// an action, or is a Back item.
+// view. Up and Down move the selection (on Pressed and Repeat), Enter
+// chooses it, holding Enter (Held) or Back goes back. Each item opens a
+// screen (pushed, so Back returns here), runs an action, or is a Back
+// item.
 //
 // The texts are not copied: give it string literals or strings that
 // outlive the menu. No heap.
@@ -36,7 +37,8 @@ public:
     void down() { if (sel_ + 1 < count_) ++sel_; }
     void choose(xNavigator& nav);
 
-    // Up, Down, Enter and Back, on Pressed. True if the key was used.
+    // Up and Down on Pressed or Repeat, Enter on Pressed or Held, Back
+    // on Pressed. True if the key was used.
     bool onKey(xKey key, xKeyAction action, xNavigator& nav);
 
     // From the cursor row down to the bottom of the surface. The

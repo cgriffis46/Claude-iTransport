@@ -48,13 +48,24 @@ void xMenu::choose(xNavigator& nav) {
 }
 
 bool xMenu::onKey(xKey key, xKeyAction action, xNavigator& nav) {
-    if (action != xKeyAction::Pressed) return false;
+    const bool press = action == xKeyAction::Pressed;
+    const bool step = press || action == xKeyAction::Repeat;
     switch (key) {
-    case xKey::Up:    up(); return true;
-    case xKey::Down:  down(); return true;
-    case xKey::Enter: choose(nav); return true;
-    case xKey::Back:  nav.pop(); return true;
-    default:          return false;
+    case xKey::Up:
+        if (step) up();
+        return step;
+    case xKey::Down:
+        if (step) down();
+        return step;
+    case xKey::Enter:
+        if (press) choose(nav);
+        else if (action == xKeyAction::Held) nav.pop();
+        return press || action == xKeyAction::Held;
+    case xKey::Back:
+        if (press) nav.pop();
+        return press;
+    default:
+        return false;
     }
 }
 

@@ -58,9 +58,11 @@ older style) and `SensorStateMachine`.
   driver on `SensorStateMachine`. It sends only pages whose hash changed.
 - `gui/` (no RTOS): `xScreen`/`xNavigator`, `xGuiCore` (screen stack,
   home at the bottom), `xMenu`/`xMenuScreen`, `xYesNoField`,
-  `xChoiceField`, `xTextField`, `xButton` (ISR-safe debounce).
-- `hw/freertos/`: `xGui` (the GUI task) and `xGuiButton`, CMSIS-RTOS2
-  only. The owner's design rule: buttons only post to the GUI's event
+  `xChoiceField`, `xTextField`, `xButton` (ISR-safe debounce; plain,
+  long press or auto-repeat via `xButtonConfig`).
+- `hw/freertos/`: `xGui` (the GUI task), `xGuiButton`, and
+  `xGuiButtonGroup` (periodic osTimer that posts `Held`/`Repeat`; a pin
+  interrupt cannot start a CMSIS-RTOS2 timer), CMSIS-RTOS2 only. The owner's design rule: buttons only post to the GUI's event
   queue, which holds one event (that is the flow control: presses
   arriving while it is full are dropped), and the GUI task only acts on
   events from that queue (no timer, no polling; data threads post
@@ -218,6 +220,8 @@ STM32L432KC (L4).
 12. Added `iDisplay/`: the SSD1306 driver and the GUI classes, ported
     from FeatherM0_Davis_ISS_Ethernet's `.ino` (`xDisplay` became
     `xScreen`) onto CMSIS-RTOS2 for the eventual STM32 port.
+13. Long press and auto-repeat buttons (`Held`, `Repeat`) through
+    `xGuiButtonGroup`'s timer.
 
 ## Open items
 
@@ -231,8 +235,7 @@ STM32L432KC (L4).
   a CubeMX project with CAN enabled, and `SafeZoneJsonPersistence`
   needs nlohmann/json.
 - `iDisplay`: no character LCD driver yet (HD44780 would provide an
-  `iTextSurface` over a shadow character buffer). No held/repeat key
-  events, and no inactivity timeout back to home (post `Home` from an
+  `iTextSurface` over a shadow character buffer). No inactivity timeout back to home (post `Home` from an
   application timer). FeatherM0_Davis_ISS_Ethernet's screens have not
   been moved onto it.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;

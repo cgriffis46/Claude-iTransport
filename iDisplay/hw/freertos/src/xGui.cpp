@@ -65,4 +65,32 @@ bool xGuiButton::onEdge(bool down) {
     return gui_.post(ev, 0);
 }
 
+bool xGuiButton::onTick() {
+    xGuiEvent ev;
+    if (!button_.onTick(osKernelGetTickCount(), ev)) return false;
+    return gui_.post(ev, 0);
+}
+
+bool xGuiButtonGroup::add(xGuiButton& b) {
+    if (count_ >= kMaxButtons) return false;
+    buttons_[count_++] = &b;
+    return true;
+}
+
+bool xGuiButtonGroup::start() {
+    if (timer_ == nullptr) {
+        timer_ = osTimerNew(timerEntry, osTimerPeriodic, this, nullptr);
+        if (timer_ == nullptr) return false;
+    }
+    return osTimerStart(timer_, periodMs_) == osOK;
+}
+
+void xGuiButtonGroup::timerEntry(void* arg) {
+    static_cast<xGuiButtonGroup*>(arg)->tick();
+}
+
+void xGuiButtonGroup::tick() {
+    for (uint8_t i = 0; i < count_; ++i) buttons_[i]->onTick();
+}
+
 } // namespace idisplay

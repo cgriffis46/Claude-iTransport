@@ -17,14 +17,16 @@ gui/            idisplay_gui, no RTOS
                   xGuiCore             the screen stack and what each event does to it
                   xMenu, xMenuScreen   scrolling menu; items open a screen, run an action, or go back
                   xYesNoField, xChoiceField, xTextField   the fields an edit screen is made of
-                  xButton              edge debouncing, safe in an interrupt
-hw/freertos/    xGui (the GUI task) and xGuiButton (CMSIS-RTOS2)
+                  xButton              edge debouncing (safe in an interrupt), long press, auto-repeat
+hw/freertos/    xGui (the GUI task), xGuiButton, and xGuiButtonGroup (the timer for
+                long presses and auto-repeat), CMSIS-RTOS2
 ```
 
 ## How it fits together
 
 ```
  pin interrupt ──► xGuiButton ──┐
+ button timer ───► (Held,Repeat)┤
                                 ├──► queue (1 slot) ──► xGui task ──► xGuiCore ──► top xScreen
  other threads ──► xGui::post ──┘                         │              (onKey / onRefresh /
    (Refresh, Show, Push, Pop, Home)                        │               show, push, pop, home)
@@ -42,6 +44,15 @@ hw/freertos/    xGui (the GUI task) and xGuiButton (CMSIS-RTOS2)
   event is waiting, or the last one is still being drawn, a new press
   finds the queue full and is dropped. `xButton` also debounces each
   edge in time, so contact bounce doesn't reach the queue.
+- **Long presses and auto-repeat.** A button can be *plain* (`Pressed` as it goes down),
+  *long press* (`Pressed` when let go before the long-press time, or `Held` once it reaches
+  it, never both), or *auto-repeat* (`Pressed`, then `Repeat` while held). Holding needs a
+  clock and a pin interrupt cannot start a CMSIS-RTOS2 timer, so `xGuiButtonGroup` runs a
+  periodic timer (20 ms) that asks each button and posts `Held`/`Repeat` to the same queue.
+  A `Repeat` that finds the queue full is dropped, so repeating never runs ahead of drawing.
+- The ready-made widgets use them: Up/Down step on `Pressed` and `Repeat`; Enter chooses on
+  `Pressed`; holding Enter (`Held`) is back in a menu and cancel in a field. With three
+  buttons: Up/Down auto-repeat, Enter long press.
 - Screens run in the GUI task. They change screens through the
   `xNavigator` they are handed, which takes effect straight away.
 - Drawing goes into RAM only. The driver sends a page only when it has
@@ -88,12 +99,17 @@ static xMenuScreen mainMenu("Main Menu");
 void HomeScreen::onKey(xKey, xKeyAction a, xNavigator& nav) { if (a == xKeyAction::Pressed) nav.push(mainMenu); }
 
 static xGui gui(oled, homeScreen);
-static xGuiButton upButton(gui, xKey::Up), downButton(gui, xKey::Down), enterButton(gui, xKey::Enter);
+static xGuiButton upButton(gui, xKey::Up, xButtonConfig::autoRepeat());      // 500 ms, then every 150 ms
+static xGuiButton downButton(gui, xKey::Down, xButtonConfig::autoRepeat());
+static xGuiButton enterButton(gui, xKey::Enter, xButtonConfig::longPress()); // hold 600 ms = back
+static xGuiButtonGroup buttons;            // the timer behind Held and Repeat
 
 void app_init() {                          // before osKernelStart()
     mainMenu.menu().add("Station active", activeScreen);
     mainMenu.menu().addBack();
     gui.start();
+    buttons.add(upButton); buttons.add(downButton); buttons.add(enterButton);
+    buttons.start();                       // needs configUSE_TIMERS
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t pin) { // EXTI on both edges, pull-up, button to ground
@@ -123,6 +139,7 @@ the weather station stay in the application. What changed:
 | `YNField`, `Choice`, `TextField` | `xYesNoField`, `xChoiceField`, `xTextField` / `xTextFieldN<N>` |
 | `oled.print(...)` on a global `Adafruit_FeatherOLED` | `render(iTextSurface& s)`: `s.print(...)`; `s.graphics()` for pixels |
 | One copied ISR per button (`xUp`, `xDown`, `xEnter`) | One `xGuiButton` per pin; the ISR passes it the pin level |
+| `BUTTON_HELD` (declared, never sent) | `Held` (long press) and `Repeat` (auto-repeat), from `xGuiButtonGroup`'s timer |
 
 Problems in the sketch's version that this fixes:
 
@@ -145,6 +162,8 @@ cmake --build build && ctest --test-dir build
 There are two host tests:
 
 - **`ssd1306_test`** runs the driver against a simulated SSD1306 RAM in three ways: behind a bare `ISensorTransport`, behind the real `I2CTransport`, and over SPI with a D/C pin. It covers the power-up sequence, sending only changed pages, settings, an unplugged chip and recovery, a stuck bus, a refused bus, 128x32, rotation, the SH1106 offset, the tick rollover, and `xssd1306`'s sleeps.
-- **`gui_test`** covers text and canvas drawing, the screen stack, menu scrolling and navigation, the three fields, button debouncing, and `xGui` over a simulated one-slot queue. That last part includes dropped presses, refresh, and a failed display.
+- **`gui_test`** covers text and canvas drawing, the screen stack, menu scrolling and navigation, the three fields, button debouncing, long press and auto-repeat (including the tick rollover and a
+  late tick), `Held`/`Repeat` in menus and fields, and `xGui` and `xGuiButtonGroup` over a simulated
+  one-slot queue and timer. That last part includes dropped presses and repeats, refresh, and a failed display.
 
 Not yet run on hardware. The SSD1306 sequence comes from the datasheet.

@@ -34,6 +34,9 @@ namespace idisplay {
 //
 //   gui.start();                                   // before osKernelStart()
 //
+// (For long presses and auto-repeat, give the buttons an xButtonConfig
+// and put them in an xGuiButtonGroup; see below.)
+//
 //   void HAL_GPIO_EXTI_Callback(uint16_t pin) {    // EXTI on both edges, pull-up, button to ground
 //       if (pin == UP_Pin) upButton.onEdge(HAL_GPIO_ReadPin(UP_GPIO_Port, UP_Pin) == GPIO_PIN_RESET);
 //       ...
@@ -87,21 +90,75 @@ private:
 
 // A button wired to an interrupt on both edges. Its only output is a
 // key event posted to the GUI's queue, with no wait: if the queue is
-// full the press is dropped.
+// full the event is dropped.
+//
+// What it sends is set by its xButtonConfig: plain (Pressed as it goes
+// down), long press (short press: Pressed on release; long: Held), or
+// auto-repeat (Pressed, then Repeat while held). Held and Repeat come
+// from xGuiButtonGroup's timer, so a long press or auto-repeat button
+// must be added to a started group.
 class xGuiButton {
 public:
     xGuiButton(xGui& gui, xKey key, uint16_t debounceMs = 50, bool reportReleases = false)
         : gui_(gui), button_(key, debounceMs, reportReleases) {}
+    xGuiButton(xGui& gui, xKey key, const xButtonConfig& config)
+        : gui_(gui), button_(key, config) {}
 
     // From the pin interrupt (or a poll), with the button's state now:
     // true when it is pressed. True if an event was posted.
     bool onEdge(bool down);
+
+    // From xGuiButtonGroup's timer. True if an event was posted.
+    bool onTick();
 
     xButton& button() { return button_; }
 
 private:
     xGui& gui_;
     xButton button_;
+};
+
+// The clock for long presses and auto-repeat: a periodic CMSIS-RTOS2
+// timer that asks each of its buttons whether it has been held long
+// enough, and lets the button post Held or Repeat to the GUI's queue.
+// It never touches a screen or the display. A pin interrupt cannot
+// start a timer (osTimerStart is not allowed in one), so this one runs
+// all the time; each tick is a few comparisons per button.
+//
+//   static xGuiButton upButton(gui, xKey::Up, xButtonConfig::autoRepeat());
+//   static xGuiButton downButton(gui, xKey::Down, xButtonConfig::autoRepeat());
+//   static xGuiButton enterButton(gui, xKey::Enter, xButtonConfig::longPress());
+//   static xGuiButtonGroup buttons;
+//
+//   buttons.add(upButton); buttons.add(downButton); buttons.add(enterButton);
+//   buttons.start();                               // after gui.start()
+//
+// The callback runs in the RTOS timer task (configUSE_TIMERS on
+// FreeRTOS). Held and Repeat are as late as one period.
+class xGuiButtonGroup {
+public:
+    static constexpr uint8_t kMaxButtons = 8;
+
+    explicit xGuiButtonGroup(uint32_t periodMs = 20) : periodMs_(periodMs ? periodMs : 1) {}
+
+    // Before start(). False when the group is full.
+    bool add(xGuiButton& b);
+
+    // Creates and starts the timer. False if it could not be.
+    bool start();
+
+    // The timer's body: one look at every button.
+    void tick();
+
+    osTimerId_t timer() const { return timer_; }
+
+private:
+    static void timerEntry(void* arg);
+
+    xGuiButton* buttons_[kMaxButtons];
+    uint8_t count_ = 0;
+    uint32_t periodMs_;
+    osTimerId_t timer_ = nullptr;
 };
 
 } // namespace idisplay

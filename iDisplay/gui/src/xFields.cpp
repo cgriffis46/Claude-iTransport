@@ -5,17 +5,27 @@ namespace idisplay {
 
 // ---- xYesNoField ----
 
+// The keys every field shares: Enter is done, holding Enter or Back is
+// cancel. None for anything else, which the field itself handles.
+static xFieldResult commonKey(xKey key, xKeyAction action) {
+    if (key == xKey::Enter && action == xKeyAction::Pressed) return xFieldResult::Done;
+    if (key == xKey::Enter && action == xKeyAction::Held) return xFieldResult::Cancelled;
+    if (key == xKey::Back && action == xKeyAction::Pressed) return xFieldResult::Cancelled;
+    return xFieldResult::None;
+}
+
+// Up and Down step on a press and on every Repeat.
+static bool isStep(xKey key, xKeyAction action) {
+    return (key == xKey::Up || key == xKey::Down)
+        && (action == xKeyAction::Pressed || action == xKeyAction::Repeat);
+}
+
 xFieldResult xYesNoField::onKey(xKey key, xKeyAction action) {
-    if (action != xKeyAction::Pressed) return xFieldResult::None;
-    switch (key) {
-    case xKey::Up:
-    case xKey::Down:
+    if (isStep(key, action)) {
         value_ = !value_;
         return xFieldResult::Changed;
-    case xKey::Enter: return xFieldResult::Done;
-    case xKey::Back:  return xFieldResult::Cancelled;
-    default:          return xFieldResult::None;
     }
+    return commonKey(key, action);
 }
 
 void xYesNoField::render(iTextSurface& s) const {
@@ -31,18 +41,12 @@ bool xChoiceField::add(const char* text) {
 }
 
 xFieldResult xChoiceField::onKey(xKey key, xKeyAction action) {
-    if (action != xKeyAction::Pressed) return xFieldResult::None;
-    switch (key) {
-    case xKey::Up:
-        if (sel_ > 0) --sel_;
+    if (isStep(key, action)) {
+        if (key == xKey::Up && sel_ > 0) --sel_;
+        if (key == xKey::Down && sel_ + 1 < count_) ++sel_;
         return xFieldResult::Changed;
-    case xKey::Down:
-        if (sel_ + 1 < count_) ++sel_;
-        return xFieldResult::Changed;
-    case xKey::Enter: return xFieldResult::Done;
-    case xKey::Back:  return xFieldResult::Cancelled;
-    default:          return xFieldResult::None;
     }
+    return commonKey(key, action);
 }
 
 void xChoiceField::render(iTextSurface& s) const {
@@ -89,7 +93,9 @@ char xTextField::glyphFor(uint8_t c) const {
 }
 
 xFieldResult xTextField::onKey(xKey key, xKeyAction action) {
-    if (action != xKeyAction::Pressed || cap_ == 0) return xFieldResult::None;
+    if (cap_ == 0) return xFieldResult::None;
+    if (key == xKey::Enter && action == xKeyAction::Held) return xFieldResult::Cancelled;
+    if (!isStep(key, action) && action != xKeyAction::Pressed) return xFieldResult::None;
     const uint8_t options = (uint8_t)(setLen_ + 2);
     const bool full = pos_ + 1 >= cap_;
     switch (key) {

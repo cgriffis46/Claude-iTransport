@@ -89,6 +89,31 @@ inline osStatus_t osMessageQueueGet(osMessageQueueId_t q, void* msg, uint8_t* pr
     return osOK;
 }
 
+typedef void (*osTimerFunc_t)(void* argument);
+typedef enum { osTimerOnce = 0, osTimerPeriodic = 1 } osTimerType_t;
+struct StubTimer { osTimerFunc_t func; void* arg; osTimerType_t type; uint32_t period; bool running; };
+typedef StubTimer* osTimerId_t;
+typedef struct { const char* name; } osTimerAttr_t;
+extern bool g_failTimerNew;
+
+inline osTimerId_t osTimerNew(osTimerFunc_t func, osTimerType_t type, void* arg, const osTimerAttr_t*) {
+    if (g_failTimerNew) return nullptr;
+    StubTimer* t = new StubTimer;
+    t->func = func; t->arg = arg; t->type = type; t->period = 0; t->running = false;
+    return t;
+}
+
+inline osStatus_t osTimerStart(osTimerId_t t, uint32_t ticks) {
+    if (t == nullptr || ticks == 0) return osErrorParameter;
+    t->period = ticks;
+    t->running = true;
+    return osOK;
+}
+
+// The test's stand-in for the timer task: fires t's callback as the
+// RTOS would every period.
+inline void stubTimerFire(osTimerId_t t) { if (t && t->running) t->func(t->arg); }
+
 inline uint32_t osMessageQueueGetCount(osMessageQueueId_t q) { return q ? (uint32_t)q->items.size() : 0; }
 
 #endif

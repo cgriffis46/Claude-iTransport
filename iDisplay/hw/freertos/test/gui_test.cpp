@@ -30,6 +30,7 @@ std::vector<uint32_t> g_delays;
 int g_threadsCreated = 0;
 uint32_t g_lastStackSize = 0;
 bool g_failQueueNew = false;
+bool g_failTimerNew = false;
 
 static int g_failures = 0;
 static void check(bool ok, const char* what) {
@@ -323,6 +324,101 @@ static void buttons() {
     check(roll.onLevel(true, 0x00000050u, ev), "and 63 ms is a press");
 }
 
+static bool tick(xButton& b, uint32_t now, xKeyAction expect) {
+    xGuiEvent ev;
+    return b.onTick(now, ev) && ev.action == expect && ev.key == b.key();
+}
+
+static void longPress() {
+    std::printf("xButton long press and auto-repeat\n");
+    xGuiEvent ev;
+
+    xButton plain(xKey::Up);
+    plain.onLevel(true, 0, ev);
+    check(!plain.onTick(5000, ev), "plain button: the clock never reports anything");
+
+    xButton enter(xKey::Enter, xButtonConfig::longPress(600));
+    check(!enter.onLevel(true, 1000, ev), "long press button: nothing as it goes down");
+    check(!enter.onTick(1300, ev), "nothing while it is down less than 600 ms");
+    check(enter.onLevel(false, 1200, ev) && ev.action == xKeyAction::Pressed, "let go at 200 ms: a short press (Pressed)");
+    check(!enter.onTick(1700, ev), "and no Held after it");
+
+    enter.onLevel(true, 2000, ev);
+    check(!enter.onTick(2599, ev), "down 599 ms: nothing");
+    check(tick(enter, 2600, xKeyAction::Held), "down 600 ms: Held");
+    check(!enter.onTick(2620, ev) && !enter.onTick(5000, ev), "Held only once per push");
+    check(!enter.onLevel(false, 5100, ev), "let go after Held: nothing (a long press is not also a short one)");
+    check(!enter.onLevel(true, 5110, ev) && !enter.onLevel(false, 5112, ev), "release bounce is no press");
+
+    enter.onLevel(true, 6000, ev);
+    enter.onLevel(false, 6010, ev);                 // bounce inside the debounce, pin stays up
+    check(!enter.onTick(6700, ev), "pin up after a bounce: no Held from a press that ended");
+
+    xButton both(xKey::Enter, xButtonConfig::longPress(600));
+    both.onLevel(true, 0, ev);
+    both.onLevel(false, 300, ev);
+    check(!both.onTick(900, ev), "a short press already reported is never also Held");
+
+    xButtonConfig rel = xButtonConfig::longPress(600);
+    rel.reportReleases = true;
+    xButton relB(xKey::Enter, rel);
+    relB.onLevel(true, 0, ev);
+    relB.onTick(600, ev);
+    check(relB.onLevel(false, 800, ev) && ev.action == xKeyAction::Released, "reportReleases: Released after Held");
+    relB.onLevel(true, 1000, ev);
+    check(relB.onLevel(false, 1100, ev) && ev.action == xKeyAction::Pressed, "but a short press is just Pressed");
+
+    xButton down(xKey::Down, xButtonConfig::autoRepeat(500, 150));
+    check(down.onLevel(true, 0, ev) && ev.action == xKeyAction::Pressed, "auto-repeat: Pressed as it goes down");
+    check(!down.onTick(499, ev), "nothing before 500 ms");
+    check(tick(down, 500, xKeyAction::Repeat), "Repeat at 500 ms");
+    check(!down.onTick(640, ev) && tick(down, 650, xKeyAction::Repeat) && tick(down, 800, xKeyAction::Repeat), "then every 150 ms");
+    check(tick(down, 2000, xKeyAction::Repeat) && !down.onTick(2100, ev) && tick(down, 2150, xKeyAction::Repeat),
+        "a late tick gives one Repeat, not a burst");
+    check(!down.onLevel(false, 2200, ev) && !down.onTick(3000, ev), "let go: no more");
+    check(down.onLevel(true, 3100, ev) && !down.onTick(3500, ev) && tick(down, 3600, xKeyAction::Repeat), "the next push starts over");
+
+    xButton roll(xKey::Enter, xButtonConfig::longPress(600));
+    roll.onLevel(true, 0xFFFFFF00u, ev);
+    check(!roll.onTick(0x00000010u, ev) && tick(roll, 0x00000158u, xKeyAction::Held), "across the tick rollover: Held at 600 ms");
+}
+
+static void widgetsHeld() {
+    std::printf("menus and fields with Held and Repeat\n");
+    FakeText t(12, 4);
+    CountingScreen home("home"), sub("sub");
+    xMenuScreen m;
+    m.menu().add("One", sub); m.menu().add("Two", sub); m.menu().add("Three", sub);
+    xGuiCore gui(t, home);
+    gui.start();
+    gui.push(m);
+    gui.handle(xGuiEvent::keyEvent(xKey::Down, xKeyAction::Repeat));
+    gui.handle(xGuiEvent::keyEvent(xKey::Down, xKeyAction::Repeat));
+    check(m.menu().selected() == 2, "menu: Repeat moves like a press");
+    gui.handle(xGuiEvent::keyEvent(xKey::Enter, xKeyAction::Repeat));
+    gui.handle(xGuiEvent::keyEvent(xKey::Enter, xKeyAction::Released));
+    check(&gui.top() == &m, "Enter Repeat and Released do nothing");
+    gui.handle(xGuiEvent::keyEvent(xKey::Enter, xKeyAction::Held));
+    check(&gui.top() == &home, "holding Enter goes back");
+
+    xYesNoField yn;
+    check(yn.onKey(xKey::Up, xKeyAction::Repeat) == xFieldResult::Changed && yn.value(), "yes/no: Repeat flips");
+    check(yn.onKey(xKey::Enter, xKeyAction::Held) == xFieldResult::Cancelled, "yes/no: holding Enter cancels");
+    xChoiceField ch;
+    ch.add("a"); ch.add("b"); ch.add("c");
+    ch.onKey(xKey::Down, xKeyAction::Repeat); ch.onKey(xKey::Down, xKeyAction::Repeat);
+    check(ch.selected() == 2 && ch.onKey(xKey::Enter, xKeyAction::Held) == xFieldResult::Cancelled, "choice: Repeat steps, holding Enter cancels");
+    check(ch.onKey(xKey::Up, xKeyAction::Released) == xFieldResult::None && ch.selected() == 2, "choice: Released is ignored");
+    char buf[8] = "";
+    xTextField f(buf, sizeof buf, xTextField::kCharsetUpper);
+    f.begin();
+    for (int i = 0; i < 3; ++i) f.onKey(xKey::Down, xKeyAction::Repeat);   // end -> A -> B -> C
+    f.onKey(xKey::Enter, xKeyAction::Pressed);
+    check(std::strcmp(buf, "C") == 0, "text: Repeat runs through the set");
+    check(f.onKey(xKey::Enter, xKeyAction::Repeat) == xFieldResult::None && std::strcmp(buf, "C") == 0, "text: Enter Repeat takes nothing");
+    check(f.onKey(xKey::Enter, xKeyAction::Held) == xFieldResult::Cancelled, "text: holding Enter cancels");
+}
+
 static void task() {
     std::printf("xGui and xGuiButton (CMSIS-RTOS2)\n");
     FakeDisplay display(16, 4);
@@ -380,6 +476,50 @@ static void task() {
     check(!broken.start() && !broken.post(xGuiEvent::refresh()) && !broken.runOnce(0), "no queue: start fails, post and runOnce refuse");
     g_failQueueNew = false;
 
+    // Long press and auto-repeat through the group's timer.
+    {
+        g_tick = 50000;
+        xGui g(display, home);
+        g.start();
+        g.begin();
+        xGuiButton enterB(g, xKey::Enter, xButtonConfig::longPress(600));
+        xGuiButton downB(g, xKey::Down, xButtonConfig::autoRepeat(500, 150));
+        xGuiButtonGroup group(20);
+        check(group.add(enterB) && group.add(downB), "group: add buttons");
+        check(group.start() && group.timer()->type == osTimerPeriodic && group.timer()->period == 20 && group.timer()->running,
+            "group: a periodic 20 ms timer, running");
+        enterB.onEdge(true);
+        for (int i = 0; i < 29; ++i) { g_tick += 20; stubTimerFire(group.timer()); }
+        check(osMessageQueueGetCount(g.queue()) == 0, "580 ms: nothing yet");
+        g_tick += 20; stubTimerFire(group.timer());
+        check(osMessageQueueGetCount(g.queue()) == 1, "600 ms: the timer posts Held");
+        const int keys = home.keys;
+        g.runOnce(osWaitForever);
+        check(home.keys == keys + 1 && home.lastKey == xKey::Enter, "the GUI task takes it to the screen");
+        enterB.onEdge(false);
+        check(osMessageQueueGetCount(g.queue()) == 0, "let go after Held: nothing posted");
+
+        g_tick += 100;
+        downB.onEdge(true);
+        g.runOnce(osWaitForever);                   // the Pressed
+        for (int i = 0; i < 25; ++i) { g_tick += 20; stubTimerFire(group.timer()); }
+        check(osMessageQueueGetCount(g.queue()) == 1, "auto-repeat: Repeat posted, the next ones dropped while it waits");
+        g.runOnce(osWaitForever);
+        for (int i = 0; i < 8; ++i) { g_tick += 20; stubTimerFire(group.timer()); }
+        check(osMessageQueueGetCount(g.queue()) == 1, "taken: the next Repeat gets in");
+        g.runOnce(osWaitForever);
+        downB.onEdge(false);
+
+        xGuiButtonGroup full;
+        for (int i = 0; i < xGuiButtonGroup::kMaxButtons; ++i) full.add(enterB);
+        check(!full.add(enterB), "group: no more than kMaxButtons");
+        g_failTimerNew = true;
+        xGuiButtonGroup noTimer;
+        check(!noTimer.start(), "group: start fails without a timer");
+        g_failTimerNew = false;
+        noTimer.tick();                             // empty group: nothing to do
+    }
+
     xGui deep(display, home, 4);
     deep.start();
     for (int i = 0; i < 4; ++i) deep.post(xGuiEvent::refresh());
@@ -392,6 +532,8 @@ int main() {
     menu();
     fields();
     buttons();
+    longPress();
+    widgetsHeld();
     task();
     std::printf("%s (%d failed)\n", g_failures ? "FAILED" : "all passed", g_failures);
     return g_failures ? 1 : 0;

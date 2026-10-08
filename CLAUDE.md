@@ -10,7 +10,7 @@ iTransport/itransport/   transports: the seam between "how we talk to a chip"
                          and "what the chip means"
 isensor/                 sensor base classes and one folder per sensor driver
 iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
-                         DHCP, DNS, SNTP), an MQTT client and a web server
+                         DHCP, DNS, SNTP), MQTT and HTTP clients, a web server
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server
 iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
@@ -111,7 +111,7 @@ older style) and `SensorStateMachine`.
   never both. The bring-up firmware's build refuses both. A design that
   needs both goes on a bigger STM32.
 - The L432 is most likely the node that sends data out (a transmitter:
-  MQTT, an HTTP client), not the one that receives or serves. Size new
+  MQTT, `xHttpClient`), not the one that receives or serves. Size new
   features for that. `xHttpServer` is for bigger boards (or
   `maxClients = 1` on an L432).
 - RAM: 64 KB. The bring-up firmware with one interface takes about 48.5 KB
@@ -173,7 +173,7 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 19 tests (its 13 drivers plus itransport's
-tests), iTransport 6, iNetTransport 16, iDisplay 9 (ssd1306_test,
+tests), iTransport 6, iNetTransport 18, iDisplay 9 (ssd1306_test,
 hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test and itransport's 6), all passing. Each test file also
 has a one-line `g++` build command in its header.
@@ -285,6 +285,9 @@ STM32L432KC (L4).
     tokens on a FreeRTOS queue, `HttpConnection` (a state machine) builds
     requests and routes them; `xHttpServer`'s daemon creates a thread per
     client.
+19. HTTP client for the L432's role as a transmitter: `HttpLexer`'s
+    Response mode (chunked, to-close, 1xx), `HttpResponseReader`, and
+    `xHttpClient` (caller's thread, no allocation, keep-alive).
 
 ## Open items
 

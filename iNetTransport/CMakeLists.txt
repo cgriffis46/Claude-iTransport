@@ -7,8 +7,9 @@
 #                            buffers and event groups
 #   dhcp/ dns/ sntp/ mqtt/   DHCP, DNS, SNTP and MQTT clients as pure logic,
 #                            each with a host test
-#   http/                    an HTTP/1.1 server's pure logic: lexer (token
-#                            stream), request state machine, routes, responses
+#   http/                    HTTP/1.1 as pure logic: lexer (token stream), the
+#                            server's request state machine, routes and
+#                            responses, the client's URLs and response reader
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
@@ -77,6 +78,8 @@ set(XNET_SOURCES
     hw/freertos/src/xMqttClient.cpp
     hw/freertos/inc/xHttpServer.h
     hw/freertos/src/xHttpServer.cpp
+    hw/freertos/inc/xHttpClient.h
+    hw/freertos/src/xHttpClient.cpp
 )
 if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
     add_library(xnet STATIC ${XNET_SOURCES})
@@ -134,4 +137,15 @@ if(SENSOR_FW_BUILD_TESTS)
     )
     target_link_libraries(xHttp_test PRIVATE w5500_driver inet_mqtt inet_http Threads::Threads)
     add_test(NAME xHttp_test COMMAND xHttp_test)
+
+    # xHttpClient on the calling thread and the W5500's driver thread, with
+    # a simulated HTTP server at the far end of the TCP connections.
+    add_executable(xHttpClient_test test/xHttpClient_test.cpp ${XNET_SOURCES})
+    target_include_directories(xHttpClient_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
+    )
+    target_link_libraries(xHttpClient_test PRIVATE w5500_driver inet_mqtt inet_http Threads::Threads)
+    add_test(NAME xHttpClient_test COMMAND xHttpClient_test)
 endif()

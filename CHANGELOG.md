@@ -10,6 +10,28 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- HTTP/1.1 client in `iNetTransport/`, for a node sending its data out.
+  - `HttpLexer` has a Response mode. It handles status lines, chunked
+    bodies (decoded; extensions and trailers skipped), bodies that run to
+    the close (`endOfInput()`), 1xx responses, and no body after HEAD
+    (`expectNoBody()`) or for 204 and 304. New token types: `Status` and
+    `Reason`.
+  - `http/HttpClientProtocol`: `HttpUrl` (http and https URLs, ports,
+    queries; fragments and user info refused), `httpWriteRequestHead()`,
+    and `HttpResponseReader`. The reader is the lexer's sink. It reads the
+    status, passes headers to a callback, and puts the body into a buffer
+    (truncated, NUL-terminated if room) or streams it to a callback that
+    can stop it. It also decides whether the connection can be kept.
+  - `hw/freertos/xHttpClient`: `get()`, `post()` and `request()` on the
+    caller's thread, with a timeout. It looks up names and keeps the
+    connection alive. A GET on a kept connection that went stale is sent
+    again, but a POST is not. Errors are reported by kind. It is 788
+    bytes on a Cortex-M4 and allocates nothing. No TLS.
+  - Host tests: `HttpClient_test` (45 checks) and `xHttpClient_test` (39
+    checks, over the W5500 driver against a simulated HTTP server). Both
+    pass under ASan/UBSan, and `xHttpClient_test` also under TSan; it
+    passed 20 runs under load. Compiled for Cortex-M4 as C++14. Not run on
+    hardware or against a real server.
 - HTTP/1.1 web server in `iNetTransport/`, for GET, POST and the other
   methods, on either interface.
   - `http/HttpLexer`: cuts the request stream into fixed-size tokens

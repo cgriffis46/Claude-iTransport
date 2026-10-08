@@ -5,8 +5,8 @@ for FreeRTOS, with two chip drivers underneath. One is the WIZnet W5500
 (Ethernet over SPI). The other is an Espressif module running ESP-AT
 firmware (Wi-Fi over a UART). There are also DHCP, DNS and SNTP clients,
 so an interface gets its address, looks up names and keeps the time, and
-an MQTT client (`xMqttClient`) and a web server (`xHttpServer`) that run
-over either interface.
+an MQTT client (`xMqttClient`), an HTTP client (`xHttpClient`) and a web
+server (`xHttpServer`) that run over either interface.
 Target: STM32L432KC, with one interface (the W5500 or an ESP module, not
 both), most likely as a node that sends its data out: an MQTT or HTTP
 client. The servers (`xHttpServer`) fit it with `maxClients = 1`, but are
@@ -17,6 +17,8 @@ meant for bigger STM32s.
 ```
  user threads   xMqttClient  publish / subscribe / receive    (mqtt/: MqttClient)
                    |       its own thread keeps the session, over an xClient
+                xHttpClient  get / post / request             (http/: lexer, response reader)
+                   |       on the caller's thread, over an xClient
                 xHttpServer  GET / POST handlers              (http/: lexer, state machine)
                    |       a daemon thread, and a thread per client, over xClients
                 xClient  connect / listen / accept / read / write / stop
@@ -197,6 +199,44 @@ if (mqtt.receive(buf, sizeof buf, m, 5000)) { /* m.topic, m.payload, m.len */ } 
   all from the FreeRTOS heap, plus one socket's stream buffers. Up to 8
   subscriptions of up to 64 characters are remembered. On the target the
   code is about 6 KB (`-Os`, Cortex-M4).
+
+## HTTP client
+
+For a node sending its readings to a server:
+
+```cpp
+static xHttpClient http(eth);             // or wifi
+
+char json[64];
+int n = std::snprintf(json, sizeof json, "{\"node\":3,\"t\":%.1f}", t);
+uint8_t reply[128];                       // the response's body, NUL-terminated if it fits
+xHttpClient::Response r;
+uint16_t status = http.post("http://sensors.local:8080/api/readings", "application/json",
+                            json, n, reply, sizeof reply, r, 5000);
+if (status == 0) { /* http.error(): Resolve, Connect, Timeout, Closed, ... */ }
+```
+
+- Every call runs on the calling thread and sleeps up to its timeout. The
+  client has no thread of its own and allocates nothing: it is 788 bytes
+  on a Cortex-M4, plus the socket's buffers while connected, and about
+  5 KB of code. One thread per client, as for `xClient`.
+- `get()`, `post()`, or `request()` for any method, extra headers
+  (`"X-Key: abc\r\n"`), a header callback, and `onBody` to stream a body
+  of any size instead of buffering it. A body bigger than the buffer keeps
+  its start, and `Response::truncated` is set.
+- The host is a name (looked up with the interface's DNS) or `a.b.c.d`,
+  with an optional port. No TLS: `https://` fails with `Unsupported`.
+- The response goes through `HttpLexer` in Response mode, the same token
+  stream as the server's, straight into `HttpResponseReader`. The client
+  reads and parses on one thread, so there is no queue between them. It
+  handles Content-Length, chunked (decoded), bodies that run to the close,
+  `100 Continue`, and HEAD/204/304 without a body.
+- The connection is kept for the next request to the same host and port,
+  unless either side says close. A server may drop a kept connection
+  while it's idle. That is noticed before sending. If it happens just as a
+  request goes out, a GET, HEAD, PUT, DELETE or OPTIONS is sent again on
+  a new connection. A POST isn't, since it may have been acted on: it
+  fails with `Closed`, and the caller decides.
 
 ## Web server
 
@@ -383,6 +423,18 @@ cmake --build build && ctest --test-dir build
   prefixes, HEAD, 404/405, forms and queries, chunked streaming,
   pipelining, HTTP/1.0 and Connection, `maxRequests`, every error status,
   `100-continue`, absolute-form targets, timeouts and a failing output.
+- `HttpClient_test`: response lexing whole, a byte at a time and in random
+  pieces (Content-Length, chunked with extensions and trailers, to the
+  close, 1xx, HEAD/204/304, and malformed responses), the response reader
+  (buffer, truncation, streaming and stopping, headers, keep-alive rules),
+  URLs, and the request head.
+- `xHttpClient_test`: `xHttpClient` over the W5500 driver, against a
+  simulated HTTP server at the far end of the chip's connections. It
+  covers GET and POST by name and by address, chunked and to-close
+  bodies, 100 Continue, HEAD, keep-alive, a 20 KB body truncated and
+  streamed, stopping a stream, kept connections going stale (a GET sent
+  again, a POST not), and every error: timeout, malformed, unknown host,
+  https, bad URL and refused.
 - `xHttp_test`: `xHttpServer` on real threads over the W5500 driver, with
   simulated browsers on the chip's far end. It covers a thread created per
   connection, pipelining, a form arriving slowly in pieces, a 14 KB

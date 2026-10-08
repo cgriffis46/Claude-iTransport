@@ -2,12 +2,13 @@
 #include <cstddef>
 #include <cstdint>
 
-// One token of an HTTP/1.x request, as HttpLexer cuts it from the byte
-// stream. Tokens are a fixed size, so a FreeRTOS queue can carry them:
+// One token of an HTTP/1.x request or response, as HttpLexer cuts it
+// from the byte stream. Tokens are a fixed size, so a FreeRTOS queue can carry them:
 // text longer than kText (a long URL, header value or body) comes as
 // several tokens of the same type, each but the last with `more` set.
 //
-//   Method Target Version  (HeaderName HeaderValue)*  HeadersEnd  Body*  MessageEnd
+//   request:  Method Target Version     (HeaderName HeaderValue)*  HeadersEnd  Body*  MessageEnd
+//   response: Version Status Reason     (HeaderName HeaderValue)*  HeadersEnd  Body*  MessageEnd
 //
 // or, at any point, Error (and nothing more from that connection).
 enum class HttpTokenType : uint8_t {
@@ -16,14 +17,18 @@ enum class HttpTokenType : uint8_t {
     Version,      // "HTTP/1.1"
     HeaderName,   // "Content-Type", as sent
     HeaderValue,  // without the whitespace around it
-    HeadersEnd,   // num: the body's length (Content-Length, else 0)
-    Body,         // raw body bytes
-    MessageEnd,   // the request is complete
+    HeadersEnd,   // num: the body's length (Content-Length, else 0), or kChunked or kToClose
+    Body,         // raw body bytes (dechunked)
+    MessageEnd,   // the message is complete
     Error,        // num: the status code to answer with (400, 501, ...)
+    Status,       // num: a response's status code
+    Reason,       // a response's reason phrase ("Not Found"); may be empty
 };
 
 struct HttpToken {
-    static constexpr size_t kText = 40;
+    static constexpr size_t   kText = 40;
+    static constexpr uint32_t kChunked = 0xFFFFFFFEu;   // HeadersEnd: Transfer-Encoding: chunked
+    static constexpr uint32_t kToClose = 0xFFFFFFFFu;   // HeadersEnd: the body runs until the connection closes
 
     HttpTokenType type = HttpTokenType::Error;
     bool          more = false;   // continues in the next token

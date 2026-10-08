@@ -44,6 +44,10 @@ public:
     bool     dropWrites = false;
     // A UDP socket sent a datagram (called with no lock held).
     std::function<void(uint8_t s, IpAddress dst, uint16_t port, std::vector<uint8_t> data)> onUdpSend;
+    // A TCP socket connected (CONNECT accepted), and sent bytes on it
+    // (each SEND). Called with no lock held; peerSend() answers.
+    std::function<void(uint8_t s, IpAddress dst, uint16_t port)> onTcpConnect;
+    std::function<void(uint8_t s, std::vector<uint8_t> data)> onTcpSend;
 
     // ---- what happened ----
     int resets = 0;
@@ -54,6 +58,8 @@ public:
     void access(bool write, const uint8_t* hdr, uint8_t* data, size_t len) {
         bool fire;
         std::vector<Datagram> out;
+        std::vector<Datagram> tcp;
+        std::vector<Datagram> conns;
         {
             std::lock_guard<std::recursive_mutex> g(m_);
             ++transfers;
@@ -65,9 +71,13 @@ public:
             else readBlock(bsb, addr, data, len);
             fire = sirLocked() & ~before;
             out.swap(udpOut_);
+            tcp.swap(tcpOut_);
+            conns.swap(tcpConns_);
         }
         if (fire && onIrq) onIrq();
         for (auto& d : out) if (onUdpSend) onUdpSend(d.s, d.dst, d.port, d.data);
+        for (auto& d : conns) if (onTcpConnect) onTcpConnect(d.s, d.dst, d.port);
+        for (auto& d : tcp) if (onTcpSend) onTcpSend(d.s, d.data);
     }
 
     // ---- the network's side ----
@@ -138,7 +148,7 @@ public:
 
 private:
     struct Datagram { uint8_t s; IpAddress dst; uint16_t port; std::vector<uint8_t> data; };
-    std::vector<Datagram> udpOut_;
+    std::vector<Datagram> udpOut_, tcpOut_, tcpConns_;
 
     struct Sock {
         uint8_t  reg[0x30] = {0};
@@ -281,7 +291,13 @@ private:
             if (sr != W5500::w5500_SOCK_INIT) break;
             std::memcpy(k.dip.b, k.reg + W5500::w5500_Sn_DIPR, 4);
             k.dport = static_cast<uint16_t>((k.reg[W5500::w5500_Sn_DPORT] << 8) | k.reg[W5500::w5500_Sn_DPORT + 1]);
-            if (connectPolicy == Connect::Accept) { sr = W5500::w5500_SOCK_ESTABLISHED; k.ir |= W5500::w5500_IR_CON; }
+            if (connectPolicy == Connect::Accept) {
+                sr = W5500::w5500_SOCK_ESTABLISHED;
+                k.ir |= W5500::w5500_IR_CON;
+                Datagram c;
+                c.s = s; c.dst = k.dip; c.port = k.dport;
+                tcpConns_.push_back(c);
+            }
             else if (connectPolicy == Connect::Refuse) { sr = W5500::w5500_SOCK_CLOSED; k.ir |= W5500::w5500_IR_TIMEOUT; }
             else sr = W5500::w5500_SOCK_SYNSENT;
             break;
@@ -309,7 +325,14 @@ private:
                 k.ir |= W5500::w5500_IR_SENDOK;
                 break;
             }
-            while (k.txRd != k.txWr) k.sent.push_back(k.tx[(k.txRd++) & (size - 1)]);
+            Datagram d;
+            d.s = s;
+            while (k.txRd != k.txWr) {
+                const uint8_t b = k.tx[(k.txRd++) & (size - 1)];
+                k.sent.push_back(b);
+                d.data.push_back(b);
+            }
+            if (onTcpSend) tcpOut_.push_back(d);
             ++k.sends;
             if (!deferSendOk) k.ir |= W5500::w5500_IR_SENDOK;
             break;

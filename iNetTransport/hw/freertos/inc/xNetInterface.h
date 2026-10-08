@@ -67,6 +67,9 @@ public:
     static constexpr uint8_t  kMaxSockets = 8;
     static constexpr uint32_t kForever = 0xFFFFFFFFu; // as a timeout: wait as long as it takes
 
+    // ms to FreeRTOS ticks, kForever to portMAX_DELAY.
+    static TickType_t toTicks(uint32_t ms);
+
     xNetInterface(const xNetInterface&) = delete;
     xNetInterface& operator=(const xNetInterface&) = delete;
 
@@ -142,8 +145,6 @@ protected:
         IpAddress ip;
         NetConfig cfg;
     };
-
-    static TickType_t toTicks(uint32_t ms);
 
     // Puts a request in the inbox, waiting up to timeoutMs for room.
     bool post(const Msg& m, uint32_t timeoutMs);

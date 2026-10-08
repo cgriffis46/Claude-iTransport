@@ -5,8 +5,8 @@
 #   hw/freertos/{inc,src}    xNetInterface, xEthernet, xWifi, xClient:
 #                            a driver thread, FreeRTOS queue, stream
 #                            buffers and event groups
-#   dhcp/ dns/ sntp/         DHCP, DNS and SNTP clients as pure logic, each
-#                            with a host test
+#   dhcp/ dns/ sntp/ mqtt/   DHCP, DNS, SNTP and MQTT clients as pure logic,
+#                            each with a host test
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
@@ -71,6 +71,8 @@ set(XNET_SOURCES
     hw/freertos/src/xWifi.cpp
     hw/freertos/inc/xClient.h
     hw/freertos/src/xClient.cpp
+    hw/freertos/inc/xMqttClient.h
+    hw/freertos/src/xMqttClient.cpp
 )
 if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
     add_library(xnet STATIC ${XNET_SOURCES})
@@ -80,13 +82,14 @@ if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
     )
     target_compile_features(xnet PUBLIC cxx_std_17)
     set_target_properties(xnet PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${INET_LIB_DIR})
-    target_link_libraries(xnet PUBLIC inet_core)
+    target_link_libraries(xnet PUBLIC inet_core inet_mqtt)
 endif()
 
 # --- DHCP, DNS, SNTP and the chip drivers ----------------------------------
 add_subdirectory(dhcp)
 add_subdirectory(dns)
 add_subdirectory(sntp)
+add_subdirectory(mqtt)
 add_subdirectory(w5500)
 add_subdirectory(espat)
 
@@ -102,6 +105,17 @@ if(SENSOR_FW_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
         ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
     )
-    target_link_libraries(xNet_test PRIVATE w5500_driver espat_driver Threads::Threads)
+    target_link_libraries(xNet_test PRIVATE w5500_driver espat_driver inet_mqtt Threads::Threads)
     add_test(NAME xNet_test COMMAND xNet_test)
+
+    # xMqttClient on real threads: the MQTT thread and the W5500's driver
+    # thread, with SimMqttBroker on the far end of the TCP connection.
+    add_executable(xMqtt_test test/xMqtt_test.cpp ${XNET_SOURCES})
+    target_include_directories(xMqtt_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
+    )
+    target_link_libraries(xMqtt_test PRIVATE w5500_driver inet_mqtt Threads::Threads)
+    add_test(NAME xMqtt_test COMMAND xMqtt_test)
 endif()

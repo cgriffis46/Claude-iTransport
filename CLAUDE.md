@@ -10,7 +10,7 @@ iTransport/itransport/   transports: the seam between "how we talk to a chip"
                          and "what the chip means"
 isensor/                 sensor base classes and one folder per sensor driver
 iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
-                         DHCP, DNS, SNTP)
+                         DHCP, DNS, SNTP) and an MQTT client
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server
 iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
@@ -162,7 +162,7 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 19 tests (its 13 drivers plus itransport's
-tests), iTransport 6, iNetTransport 12, iDisplay 9 (ssd1306_test,
+tests), iTransport 6, iNetTransport 14, iDisplay 9 (ssd1306_test,
 hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test and itransport's 6), all passing. Each test file also
 has a one-line `g++` build command in its header.
@@ -268,6 +268,8 @@ STM32L432KC (L4).
     `SPITransport::setAddressBit()` for Semtech radios.
 16. `iClock` and `Stm32RtcClock`; the Davis receiver timed by the STM32
     RTC, with DIO0 latched by the RTC timestamp unit.
+17. MQTT 3.1.1 in iNetTransport: `MqttClient` (pure logic, QoS 0/1) and
+    `xMqttClient` (its own thread over an `xClient`, on either interface).
 
 ## Open items
 

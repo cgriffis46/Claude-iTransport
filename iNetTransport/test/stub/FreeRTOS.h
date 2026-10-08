@@ -7,6 +7,7 @@
 // semphr.h all just
 // include this file.
 #pragma once
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -63,6 +64,7 @@ typedef SimQueue* QueueHandle_t;
 
 inline QueueHandle_t xQueueCreate(UBaseType_t depth, UBaseType_t item) { return new SimQueue{item, depth, {}}; }
 inline void vQueueDelete(QueueHandle_t h) { delete h; }
+inline BaseType_t xQueueReset(QueueHandle_t h) { std::lock_guard<std::mutex> l(simrtos::mu()); h->q.clear(); return pdPASS; }
 inline BaseType_t xQueueSend(QueueHandle_t h, const void* item, TickType_t ticks) {
     std::unique_lock<std::mutex> l(simrtos::mu());
     if (!simrtos::waitFor(l, ticks, [&] { return h->q.size() < h->depth; })) return pdFAIL;
@@ -143,8 +145,31 @@ inline EventBits_t xEventGroupWaitBits(EventGroupHandle_t h, EventBits_t want, B
 }
 
 // ---- tasks ----
+// xTaskCreate() starts a detached std::thread. A task ends when its
+// function returns: vTaskDelete(nullptr) (which a real task must call
+// instead of returning) does nothing here. simrtos::failTaskCreate makes
+// the next creations fail, as when the FreeRTOS heap is out.
 typedef void* TaskHandle_t;
+typedef void (*TaskFunction_t)(void*);
+typedef uint32_t StackType_t;
+#define configSTACK_DEPTH_TYPE uint16_t
+#define tskIDLE_PRIORITY ((UBaseType_t)0U)
 inline TaskHandle_t xTaskGetCurrentTaskHandle() { static thread_local char me; return &me; }
+namespace simrtos {
+inline std::atomic<int>& failTaskCreate() { static std::atomic<int> n{0}; return n; }
+inline std::atomic<int>& tasksCreated() { static std::atomic<int> n{0}; return n; }
+inline std::atomic<int>& tasksRunning() { static std::atomic<int> n{0}; return n; }
+}
+inline BaseType_t xTaskCreate(TaskFunction_t fn, const char*, configSTACK_DEPTH_TYPE, void* arg, UBaseType_t,
+                              TaskHandle_t* handle) {
+    if (simrtos::failTaskCreate() > 0) { --simrtos::failTaskCreate(); return pdFAIL; }
+    ++simrtos::tasksCreated();
+    ++simrtos::tasksRunning();
+    std::thread([fn, arg] { fn(arg); --simrtos::tasksRunning(); }).detach();
+    if (handle) *handle = nullptr;
+    return pdPASS;
+}
+inline void vTaskDelete(TaskHandle_t) {}
 
 // ---- heap ----
 inline void* pvPortMalloc(size_t n) { return std::malloc(n); }
@@ -153,23 +178,30 @@ inline void vPortFree(void* p) { std::free(p); }
 // ---- semaphores and mutexes (semphr.h) ----
 // One kind of object for all three: a mutex is a binary semaphore that
 // starts given; a recursive mutex also counts its owner's takes.
-struct SimSemaphore { int count; TaskHandle_t owner; int depth; };
+struct SimSemaphore { int count; TaskHandle_t owner; int depth; int max; };
 typedef SimSemaphore* SemaphoreHandle_t;
 
-inline SemaphoreHandle_t xSemaphoreCreateMutex() { return new SimSemaphore{1, nullptr, 0}; }
-inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() { return new SimSemaphore{1, nullptr, 0}; }
-inline SemaphoreHandle_t xSemaphoreCreateBinary() { return new SimSemaphore{0, nullptr, 0}; }   // starts taken
+inline SemaphoreHandle_t xSemaphoreCreateMutex() { return new SimSemaphore{1, nullptr, 0, 1}; }
+inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() { return new SimSemaphore{1, nullptr, 0, 1}; }
+inline SemaphoreHandle_t xSemaphoreCreateBinary() { return new SimSemaphore{0, nullptr, 0, 1}; }   // starts taken
+inline SemaphoreHandle_t xSemaphoreCreateCounting(UBaseType_t max, UBaseType_t initial) {
+    return new SimSemaphore{static_cast<int>(initial), nullptr, 0, static_cast<int>(max)};
+}
+inline UBaseType_t uxSemaphoreGetCount(SemaphoreHandle_t h) {
+    std::lock_guard<std::mutex> l(simrtos::mu());
+    return static_cast<UBaseType_t>(h->count);
+}
 inline void vSemaphoreDelete(SemaphoreHandle_t h) { delete h; }
 inline BaseType_t xSemaphoreTake(SemaphoreHandle_t h, TickType_t ticks) {
     std::unique_lock<std::mutex> l(simrtos::mu());
     if (!simrtos::waitFor(l, ticks, [&] { return h->count > 0; })) return pdFAIL;
-    h->count = 0;
+    --h->count;
     return pdPASS;
 }
 inline BaseType_t xSemaphoreGive(SemaphoreHandle_t h) {
     std::lock_guard<std::mutex> l(simrtos::mu());
-    if (h->count > 0) return pdFAIL;   // already given
-    h->count = 1;
+    if (h->count >= h->max) return pdFAIL;   // already given
+    ++h->count;
     simrtos::cv().notify_all();
     return pdPASS;
 }

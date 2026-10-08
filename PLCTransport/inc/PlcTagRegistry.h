@@ -9,6 +9,20 @@
 #include "PlcDataType.h"
 #include "PlcMutex.h"
 
+// A copy of one tag, made under the registry's lock, for code that must
+// not hold the lock while it works with the value: a web server writing
+// to a socket, say, which could take seconds. Fixed size, no allocation.
+struct PlcTagSnapshot {
+    static constexpr size_t kMaxName = 63;    // longer names are cut (CIP's own limit is 40)
+    static constexpr size_t kMaxValue = 64;   // bytes of the value kept; elementary types all fit
+
+    char        name[kMaxName + 1];
+    PlcDataType dataType;
+    size_t      sizeBytes;                    // the tag's own size, even when value holds less
+    bool        writable;
+    uint8_t     value[kMaxValue];             // its first min(sizeBytes, kMaxValue) bytes
+};
+
 // Central, thread-safe registry of PLC tags — a name-addressable
 // view onto live variables and structs elsewhere in the program.
 // Multiple threads (the per-connection worker threads a TCP/CIP
@@ -108,6 +122,31 @@ public:
         return true;
     }
 
+    // Copies up to max tags, from the first'th in the order they were
+    // registered, into out: name, type, size, writable and value, all
+    // under one hold of the lock. Returns how many. Tags are never
+    // removed, so paging through with first = 0, max, 2*max, ... sees
+    // each once (and any registered meanwhile, at the end).
+    size_t snapshot(size_t first, PlcTagSnapshot* out, size_t max) const {
+        std::lock_guard<PlcMutex> lock(mutex_);
+        size_t n = 0;
+        for (size_t i = first; i < tags_.size() && n < max; ++i, ++n) copyLocked(tags_[i], out[n]);
+        return n;
+    }
+
+    // The same for one tag, by name. No std::string is made for the
+    // lookup. false: no such tag.
+    bool snapshot(const char* name, PlcTagSnapshot& out) const {
+        std::lock_guard<PlcMutex> lock(mutex_);
+        for (const auto& tag : tags_) {
+            if (tag.name == name) {
+                copyLocked(tag, out);
+                return true;
+            }
+        }
+        return false;
+    }
+
     size_t tagCount() const {
         std::lock_guard<PlcMutex> lock(mutex_);
         return tags_.size();
@@ -129,6 +168,16 @@ public:
     }
 
 private:
+    static void copyLocked(const PlcTagDescriptor& tag, PlcTagSnapshot& out) {
+        const size_t n = tag.name.size() < PlcTagSnapshot::kMaxName ? tag.name.size() : PlcTagSnapshot::kMaxName;
+        std::memcpy(out.name, tag.name.data(), n);
+        out.name[n] = 0;
+        out.dataType = tag.dataType;
+        out.sizeBytes = tag.sizeBytes;
+        out.writable = tag.writable;
+        std::memcpy(out.value, tag.data, tag.sizeBytes < PlcTagSnapshot::kMaxValue ? tag.sizeBytes : PlcTagSnapshot::kMaxValue);
+    }
+
     // Caller must already hold mutex_.
     const PlcTagDescriptor* findLocked(const std::string& name) const {
         for (const auto& tag : tags_) {

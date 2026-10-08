@@ -1,18 +1,29 @@
 # iNetTransport
 
 Network interfaces on top of itransport: `xEthernet`, `xWifi` and `xClient`
-for FreeRTOS, with two chip drivers underneath. One is the WIZnet W5500
-(Ethernet over SPI). The other is an Espressif module running ESP-AT
-firmware (Wi-Fi over a UART). There are also DHCP, DNS and SNTP clients,
+for FreeRTOS, with three drivers underneath. One is the WIZnet W5500
+(Ethernet over SPI). One is an Espressif module running ESP-AT firmware
+(Wi-Fi over a UART). The third, `SocketNetDevice`, runs on a TCP/IP stack's
+socket API: lwIP's on an MCU with its own Ethernet MAC (the STM32F207) or
+on an ESP32, or the operating system's on Linux. There are also DHCP, DNS and SNTP clients,
 so an interface gets its address, looks up names and keeps the time, and
-an MQTT client (`xMqttClient`) that runs over either interface.
-Target: STM32L432KC.
+an MQTT client (`xMqttClient`), an HTTP client (`xHttpClient`) and a web
+server (`xHttpServer`) that run over either interface.
+Target: STM32L432KC, with one interface (the W5500 or an ESP module, not
+both), most likely as a node that sends its data out: an MQTT or HTTP
+client. The servers (`xHttpServer`) fit it with `maxClients = 1`, but are
+meant for bigger STM32s, such as the F207 with lwIP, where the same code
+runs on `SocketNetDevice`.
 
 ## Layers
 
 ```
  user threads   xMqttClient  publish / subscribe / receive    (mqtt/: MqttClient)
                    |       its own thread keeps the session, over an xClient
+                xHttpClient  get / post / request             (http/: lexer, response reader)
+                   |       on the caller's thread, over an xClient
+                xHttpServer  GET / POST handlers              (http/: lexer, state machine)
+                   |       a daemon thread, and a thread per client, over xClients
                 xClient  connect / listen / accept / read / write / stop
                    |       (each sleeps on its socket's event group, with a timeout)
  hw/freertos    xEthernet / xWifi  ->  xNetInterface
@@ -20,18 +31,20 @@ Target: STM32L432KC.
                    |       per-socket stream buffers + event group
  inc/           iNetDevice / iEthernetDevice / iWifiDevice
                    |       the seam: any chip, any bus
- w5500/         w5500<TTransport>        espat/   espat<TTransport>
-                   |   + dhcp/ dns/ sntp/            |   (the module does DHCP,
-                   |     on one UDP socket           |    DNS and SNTP itself)
- itransport     iBlockTransport (SPI, DMA)          iTransport (UART stream)
+ w5500/         w5500<TTransport>        espat/   espat<TTransport>    sockets/  SocketNetDevice
+                   |   + dhcp/ dns/ sntp/            |   (the module does         |  + dns/ sntp/ on a
+                   |     on one UDP socket           |    DHCP, DNS, SNTP)        |    UDP socket
+ itransport     iBlockTransport (SPI, DMA)          iTransport (UART stream)   lwIP sockets (MAC + PHY)
+                                                                               or the OS's
 ```
 
 The bus is the chip driver's business, not the interface's. A chip on SPI
 uses `iBlockTransport` (W5500, ATWINC1500). A module on a UART uses the
 stream `iTransport` (ESP-AT). A PHY on MII/RMII would sit behind the MCU's
-Ethernet MAC and a host stack such as lwIP. All of them implement
-`iNetDevice`, so `xEthernet`, `xWifi` and `xClient` don't change. The
-STM32L432 has no Ethernet MAC, so MII/RMII doesn't apply to this target.
+Ethernet MAC and a host stack such as lwIP: that's `SocketNetDevice`. All
+of them implement `iNetDevice`, so `xEthernet`, `xWifi` and `xClient`, and
+everything on them, don't change. The STM32L432 has no Ethernet MAC, so it
+uses the W5500 or an ESP module; the F207 has one, and uses lwIP.
 
 ## Threads and blocking
 
@@ -124,6 +137,47 @@ returns how long it can be left, so the driver thread stays responsive.
   socket Failed, backs off, and starts again from reset.
 - `W5500Probe.h`: blocking wiring checks for bring-up, run before the driver.
 
+## Socket driver: lwIP, or the operating system
+
+`SocketNetDevice` is an `iEthernetDevice` on a BSD socket API, so a board
+whose TCP/IP stack is lwIP runs the same interfaces, web server and clients
+as one with a W5500:
+
+```cpp
+// STM32F207, CubeMX with LwIP and FreeRTOS: MX_LWIP_Init() has set up the
+// MAC, the PHY and DHCP. Build iNetTransport with INET_SOCKETS_LWIP.
+SocketNetDevice::Config devCfg;
+devCfg.platform = lwipNetifPlatform(&gnetif);   // link and address from lwIP's netif
+static SocketNetDevice dev(devCfg);
+static xEthernet eth(dev);
+eth.begin(net);                                 // net.dns: used if lwIP's DNS has none
+osThreadNew([](void* e) { static_cast<xEthernet*>(e)->run(); }, &eth, &netAttr);
+// From here on, exactly as with the W5500: xClient, xHttpServer, xHttpClient, xMqttClient.
+```
+
+- lwIP owns the interface: MAC, PHY, address, DHCP. The device only reads
+  the link and the address through `Platform` (`hw/lwip/LwipNetif`), and
+  tells the interface when they change. Every socket goes when the
+  address does.
+- Needs `LWIP_SOCKET 1` (so `NO_SYS 0`). Any `LWIP_COMPAT_SOCKETS` works:
+  `NetSockets.h` undoes the compat macros (`connect`, `poll`, `close`,
+  ...) that would otherwise rewrite this project's methods of those names.
+  In your own files, include lwIP's socket header after this project's
+  headers, or set `LWIP_COMPAT_SOCKETS 2`.
+- Non-blocking: `poll()` does one zero-timeout `select()` over every
+  socket. It asks to be called again within 2 ms while a socket is open,
+  and within 50 ms otherwise. Received data waits at most one interval.
+- Several sockets listening on one port share one listening socket.
+  Connections wait in its backlog rather than being refused between
+  accepts, which is better than the W5500 can do.
+- DNS and SNTP use the same `DnsClient` and `SntpClient` as the W5500, on
+  a UDP socket of the device's own, so lwIP's own DNS isn't needed.
+- About 4.7 KB of code and 4 KB of RAM for 8 sockets on a Cortex-M3,
+  plus lwIP itself. lwIP's sockets cost more RAM than the raw API that
+  `CipTagTcpServer` uses; the F207's 128 KB has room for both.
+- On Linux, the same source (without `INET_SOCKETS_LWIP`) runs on the
+  operating system's sockets. That is how the tests drive it with curl.
+
 ## ESP-AT driver
 
 `espat<TTransport>` drives an ESP32, ESP32-C3 or ESP8266 running ESP-AT
@@ -192,6 +246,143 @@ if (mqtt.receive(buf, sizeof buf, m, 5000)) { /* m.topic, m.payload, m.len */ } 
   subscriptions of up to 64 characters are remembered. On the target the
   code is about 6 KB (`-Os`, Cortex-M4).
 
+## HTTP client
+
+For a node sending its readings to a server:
+
+```cpp
+static xHttpClient http(eth);             // or wifi
+
+char json[64];
+int n = std::snprintf(json, sizeof json, "{\"node\":3,\"t\":%.1f}", t);
+uint8_t reply[128];                       // the response's body, NUL-terminated if it fits
+xHttpClient::Response r;
+uint16_t status = http.post("http://sensors.local:8080/api/readings", "application/json",
+                            json, n, reply, sizeof reply, r, 5000);
+if (status == 0) { /* http.error(): Resolve, Connect, Timeout, Closed, ... */ }
+```
+
+- Every call runs on the calling thread and sleeps up to its timeout. The
+  client has no thread of its own and allocates nothing: it is 788 bytes
+  on a Cortex-M4, plus the socket's buffers while connected, and about
+  5 KB of code. One thread per client, as for `xClient`.
+- `get()`, `post()`, or `request()` for any method, extra headers
+  (`"X-Key: abc\r\n"`), a header callback, and `onBody` to stream a body
+  of any size instead of buffering it. A body bigger than the buffer keeps
+  its start, and `Response::truncated` is set.
+- The host is a name (looked up with the interface's DNS) or `a.b.c.d`,
+  with an optional port. No TLS: `https://` fails with `Unsupported`.
+- The response goes through `HttpLexer` in Response mode, the same token
+  stream as the server's, straight into `HttpResponseReader`. The client
+  reads and parses on one thread, so there is no queue between them. It
+  handles Content-Length, chunked (decoded), bodies that run to the close,
+  `100 Continue`, and HEAD/204/304 without a body.
+- The connection is kept for the next request to the same host and port,
+  unless either side says close. A server may drop a kept connection
+  while it's idle. That is noticed before sending. If it happens just as a
+  request goes out, a GET, HEAD, PUT, DELETE or OPTIONS is sent again on
+  a new connection. A POST isn't, since it may have been acted on: it
+  fails with `Closed`, and the caller decides.
+
+## Web server
+
+```cpp
+static void temp(const HttpRequest& req, HttpResponse& res, void*) {
+    res.begin("application/json");
+    res.printf("{\"t\":%.1f}", readTemp());
+}
+static void led(const HttpRequest& req, HttpResponse& res, void*) {
+    char state[8];
+    if (!req.param("state", state, sizeof state)) { res.status(422).send("text/plain", "state?"); return; }
+    setLed(std::strcmp(state, "on") == 0);
+    res.send("text/plain", "ok");
+}
+
+static xHttpServer web(eth, xHttpServer::Config());   // port 80, 2 clients
+web.get("/temp", temp);
+web.post("/led", led);            // form fields or ?state=on
+web.get("/api/*", api);           // a prefix
+web.begin();
+osThreadNew([](void* w) { static_cast<xHttpServer*>(w)->run(); }, &web, &webAttr);
+```
+
+How a request flows:
+
+```
+ socket bytes --> HttpLexer --> FreeRTOS queue --> HttpConnection --> handler
+   (xClient)      a byte at a    of HttpTokens      state machine:     (HttpRequest,
+                  time: method,  (fixed size;       assembles the      HttpResponse)
+                  target, headers, long text in     request, routes,
+                  body by length  pieces)           answers errors
+```
+
+- **Threads.** `run()` is the daemon. It listens on the port, accepts,
+  and creates a thread (`xTaskCreate`) for each client. That thread
+  reads, lexes, parses and runs the handlers, then deletes itself when
+  the connection ends. A handler can block, and only its own client
+  waits. Up to `maxClients` at once (each holds a socket). A W5500 socket
+  listens for one connection at a time. While every client slot is busy,
+  or for the moment between accepting and listening again, new
+  connections are refused (TCP RST), and a browser retries.
+- **Tokens.** `strtok()` won't do for a socket: it needs the whole text
+  in one NUL-terminated buffer and writes into it, while a request
+  arrives in pieces split anywhere. `HttpLexer` is a state machine over
+  the request grammar instead, fed whatever has arrived. It checks the
+  syntax, trims header values, and frames the body by Content-Length.
+  Tokens carry up to 40 bytes; longer text comes as several. When the
+  queue fills, the lexer stops, the state machine empties the queue, and
+  the lexer carries on where it was.
+- **Requests.** HTTP/1.0 and 1.1, keep-alive and pipelining. The method,
+  path (percent-decoded), query, headers and body go into one buffer per
+  client (`requestBytes`). `req.param()` reads the query string and
+  `application/x-www-form-urlencoded` bodies. `Expect: 100-continue` is
+  answered. Request bodies need a Content-Length (chunked uploads get
+  501).
+- **Responses.** `send()` with a length, or `begin()` then
+  `write()`/`print()`/`printf()` to stream. Streamed responses are sent
+  chunked to HTTP/1.1 clients, and end with the connection for HTTP/1.0
+  ones. HEAD goes to the GET handler, without the body. A handler that
+  answers nothing gets a 500.
+- **Answered by the server:** 400 (malformed, or HTTP/1.1 without Host),
+  404, 405 (with Allow), 408 (`requestTimeoutMs` from a request's first
+  byte), 413 (body over `requestBytes`, before it is read), 414, 417, 431,
+  501, 503 (no thread could be created) and 505. Every error closes the
+  connection except 404 and 405. Idle kept connections close after
+  `idleTimeoutMs`.
+- **RAM per client:** `requestBytes` (2 KB) plus the token queue (8 tokens,
+  about 400 B) and about 600 B of state, allocated in `begin()`. A client
+  thread's stack (`stackWords`, 3 KB) only exists while that client is
+  connected. On the target the code is about 8 KB (`-Os`, Cortex-M4),
+  plus newlib's `vsnprintf` if `printf()` is used. No TLS, no files.
+
+### The web UI from files
+
+The pages don't have to be in the firmware. `HttpStaticFiles` serves them
+from an `HttpFileSource`, so the UI can change without reflashing:
+
+```cpp
+static HttpStdioFiles disk("0:/www");        // FILE*: Linux, or newlib reaching FatFs
+static HttpMemoryFiles builtIn(files, n);   // arrays in flash: a fixed UI, or the fallback
+static HttpStaticFiles site(disk, &builtIn);
+web.get("/api/tags", ...);                   // API routes first
+web.get("/*", HttpStaticFiles::handler, &site);
+```
+
+- `/` and any path ending in `/` serve `index.html`. The type comes from
+  the extension. Files are sent with `Cache-Control: no-cache`, so a
+  changed UI shows on the next load.
+- When the browser takes gzip and `<file>.gz` exists, that is sent
+  (`Content-Encoding: gzip`). A UI can be stored compressed, which is
+  handy on small flash.
+- A file missing from the first source comes from the fallback (the
+  built-in page), so a blank card still gives a working UI.
+- Paths with a `..` segment or a backslash get 404. Nothing outside the
+  folder is reachable, encoded or not.
+- On an STM32, `HttpStdioFiles` needs newlib's `_open`/`_read`/`_lseek`
+  wired to a file system (FatFs on an SD card, LittleFS on SPI flash).
+  Alternatively, write an `HttpFileSource` straight on that file system:
+  three methods (open, read at an offset, close).
+
 ## Using it
 
 Ethernet, from a CubeMX project (complete in
@@ -246,7 +437,7 @@ ring.
 that builds with CMake and the STM32CubeL4 package, with no CubeMX project.
 It checks the W5500's wiring at each SPI speed and then runs at the fastest
 one that passes. It checks the INT line and the PHY, then brings up DHCP
-and/or the ESP module, looks up a name and sets the time. It logs each step
+or the ESP module (one per build), looks up a name and sets the time. It logs each step
 with what to check when it fails, and serves echo, discard, chargen and
 time. `tools/net_bringup.py` drives those services from a PC, checking
 every byte, measuring latency and throughput, and comparing the board's
@@ -300,6 +491,46 @@ cmake --build build && ctest --test-dir build
   (reconnect, re-subscribe, DUP resend), a refused connection with backoff
   and store and forward, keepalive, callback mode (publishing from the
   callback), a full inbox, and four threads publishing at once.
+- `Http_test`: the lexer whole, a byte at a time and in random pieces,
+  through a queue of one; long tokens in pieces; malformed requests (each
+  with its status); then requests end to end. That covers routing,
+  prefixes, HEAD, 404/405, forms and queries, chunked streaming,
+  pipelining, HTTP/1.0 and Connection, `maxRequests`, every error status,
+  `100-continue`, absolute-form targets, timeouts and a failing output.
+- `HttpClient_test`: response lexing whole, a byte at a time and in random
+  pieces (Content-Length, chunked with extensions and trailers, to the
+  close, 1xx, HEAD/204/304, and malformed responses), the response reader
+  (buffer, truncation, streaming and stopping, headers, keep-alive rules),
+  URLs, and the request head.
+- `xHttpClient_test`: `xHttpClient` over the W5500 driver, against a
+  simulated HTTP server at the far end of the chip's connections. It
+  covers GET and POST by name and by address, chunked and to-close
+  bodies, 100 Continue, HEAD, keep-alive, a 20 KB body truncated and
+  streamed, stopping a stream, kept connections going stale (a GET sent
+  again, a POST not), and every error: timeout, malformed, unknown host,
+  https, bad URL and refused.
+- `xHttp_test`: `xHttpServer` on real threads over the W5500 driver, with
+  simulated browsers on the chip's far end. It covers a thread created per
+  connection, pipelining, a form arriving slowly in pieces, a 14 KB
+  streamed page, 413, three clients at once (slow handlers in parallel
+  without holding up a fast one, nothing listening while all are busy),
+  a closed connection freeing its slot, idle and request timeouts, a
+  thread that can't be created (503), and `stop()` ending every thread.
+- `HttpFiles_test`: files from memory and from a real folder through
+  `FILE*`: index.html, types, gzip, a fallback, HEAD, a 70 KB file, a file
+  changed while serving, and every way of trying to leave the folder.
+- `SocketNetDevice_test`: the stack on the operating system's sockets,
+  over real TCP on the loopback, driven by curl. It covers pages from a
+  folder, gzip, HEAD, POST, keep-alive, three slow requests in parallel
+  with a fourth waiting in the backlog, `xHttpClient` to the same
+  server, 1 MB echoed through `xClient`, refused and closed connections,
+  and DNS and SNTP against the simulated servers on 127.0.0.3:53 and
+  127.0.0.4:123 (skipped without root).
+- `Lwip_test` (with `-DLWIP_DIR=<lwIP source>`): lwIP built for the PC, two
+  interfaces on its loopback netif, everything through lwIP's own TCP and
+  UDP. It covers `xHttpServer` to `xHttpClient` (an 84 KB chunked page,
+  keep-alive, three slow requests at once), 256 KB echoed through
+  `xClient`, DNS and SNTP, and the link going down and up.
 - `xNet_test`: the real FreeRTOS-layer sources on real threads, against a
   FreeRTOS simulation (`test/stub`), with both drivers. It covers blocking
   reads and their timeouts, 20 KB each way, a close waking a sleeping

@@ -10,8 +10,10 @@ iTransport/itransport/   transports: the seam between "how we talk to a chip"
                          and "what the chip means"
 isensor/                 sensor base classes and one folder per sensor driver
 iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
-                         DHCP, DNS, SNTP) and an MQTT client
-PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server
+                         lwIP or OS sockets, DHCP, DNS, SNTP), MQTT and HTTP
+                         clients, a web server that serves files
+PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server,
+                         the tags as read-only JSON for the web server
 iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
 iRadio/                  radios: the Davis ISS receiver on an RFM69, with
@@ -106,6 +108,31 @@ older style) and `SensorStateMachine`.
   6.7 ms airtime and 1 ms RX settling; `test/stub/` is a single threaded
   FreeRTOS in which time passes only inside `ulTaskNotifyTake()`.
 
+### iNetTransport on the STM32L432KC
+- An L432 board has one network interface, the W5500 or an ESP-AT module,
+  never both. The bring-up firmware's build refuses both. A design that
+  needs both goes on a bigger STM32.
+- The L432 is most likely the node that sends data out (a transmitter:
+  MQTT, `xHttpClient`), not the one that receives or serves. Size new
+  features for that. `xHttpServer` is for bigger boards (or
+  `maxClients = 1` on an L432).
+- RAM: 64 KB. The bring-up firmware with one interface takes about 48.5 KB
+  (34 KB of it the FreeRTOS heap); with both it was 54 KB.
+
+### iNetTransport on the STM32F207 (and ESP32)
+- The F207 has its own Ethernet MAC and runs lwIP (CubeMX). The same
+  interfaces, web server and clients run on it through
+  `sockets/SocketNetDevice` built with `INET_SOCKETS_LWIP`, with
+  `hw/lwip/LwipNetif` reading the netif. The PLC tag database
+  (`PLCTransport`) and its web API live on this board.
+- `NetSockets.h` undoes lwIP's `LWIP_COMPAT_SOCKETS` macros (`connect`,
+  `poll`, `close`...), which otherwise rewrite our methods of those names.
+- `Lwip_test` builds lwIP 2.2.1 for the PC (its Unix port, loopback netif)
+  when iNetTransport is configured with `-DLWIP_DIR=<lwIP source>`
+  (`git clone --branch STABLE-2_2_1_RELEASE https://github.com/lwip-tcpip/lwip`).
+- The web is read-only. Writes wait for authentication (see
+  PLCTransport/README.md).
+
 ## How a sensor driver is written
 
 Follow an existing driver (`lps35hw` for registers, `HMC6352` for
@@ -154,7 +181,7 @@ cmake -S <isensor|iTransport|iNetTransport> -B build \
       -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON
 cmake --build build && ctest --test-dir build
 cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST      # builds, no tests
-cmake -S PLCTransport -B build                                  # plc_tags
+cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON       # plc_tags, plc_web, 2 tests
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # ssd1306_test, gui_test
 cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
@@ -162,7 +189,8 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 19 tests (its 13 drivers plus itransport's
-tests), iTransport 6, iNetTransport 14, iDisplay 9 (ssd1306_test,
+tests), iTransport 6, iNetTransport 21 (20 without LWIP_DIR), PLCTransport 2,
+iDisplay 9 (ssd1306_test,
 hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test and itransport's 6), all passing. Each test file also
 has a one-line `g++` build command in its header.
@@ -270,8 +298,28 @@ STM32L432KC (L4).
     RTC, with DIO0 latched by the RTC timestamp unit.
 17. MQTT 3.1.1 in iNetTransport: `MqttClient` (pure logic, QoS 0/1) and
     `xMqttClient` (its own thread over an `xClient`, on either interface).
+18. HTTP/1.1 server in iNetTransport: `HttpLexer` cuts the stream into
+    tokens on a FreeRTOS queue, `HttpConnection` (a state machine) builds
+    requests and routes them; `xHttpServer`'s daemon creates a thread per
+    client.
+19. HTTP client for the L432's role as a transmitter: `HttpLexer`'s
+    Response mode (chunked, to-close, 1xx), `HttpResponseReader`, and
+    `xHttpClient` (caller's thread, no allocation, keep-alive).
+20. The web server on lwIP (F207) as well as the W5500/ESP: `SocketNetDevice`
+    on BSD sockets, tested over the PC's sockets and over lwIP itself.
+    The PLC tags as read-only JSON (`PlcTagWebApi`), the UI served from
+    files (`HttpStaticFiles`, with a built-in fallback page).
 
 ## Open items
+
+- Web writes to PLC tags: need authentication first (sessions, roles, an
+  allow-list of tags; TLS or signed requests). Captive portal for Wi-Fi
+  setup on an ESP. Neither is built; see PLCTransport/README.md.
+- `SocketNetDevice` has not run on an F207 or an ESP32: compiled for
+  Cortex-M3 against lwIP 2.2.1 with CubeMX-like options, and run over lwIP
+  on a PC. No Xtensa toolchain was used for the ESP32.
+- `PlcTagRegistry`'s lock doesn't cover the control program's own writes:
+  64-bit values and structs can be read half-updated.
 
 - None of the drivers or libraries has run on hardware. The MMC56x3,
   LSM303DLHC and HMC6352 sequences come from datasheets only.

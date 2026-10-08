@@ -1,5 +1,6 @@
 # Bring-up firmware for the iNetTransport drivers on a NUCLEO-L432KC: W5500
-# Ethernet on SPI1 and/or an ESP-AT Wi-Fi module on USART1. Standalone:
+# Ethernet on SPI1 or an ESP-AT Wi-Fi module on USART1, one per build (an
+# L432 board has one network interface; both need a bigger STM32). Standalone:
 # it needs the GNU Arm toolchain and ST's STM32CubeL4 firmware package
 # (which CubeIDE/CubeMX download to ~/STM32Cube/Repository), no CubeMX
 # project. See BRINGUP.md.
@@ -10,7 +11,7 @@
 #
 # Options:
 #   -DBRINGUP_ETH=ON|OFF        W5500 (default ON)
-#   -DBRINGUP_WIFI=ON|OFF       ESP-AT (default OFF), with
+#   -DBRINGUP_WIFI=ON|OFF       ESP-AT instead (default OFF; with BRINGUP_ETH=OFF), with
 #   -DWIFI_SSID=... -DWIFI_PASS=... -DESP_BAUD=115200
 #   -DETH_DHCP=ON|OFF           static address otherwise: edit Core/Inc/config.h
 #
@@ -44,6 +45,18 @@ option(ETH_DHCP     "Ethernet address by DHCP" ON)
 set(WIFI_SSID "" CACHE STRING "Wi-Fi network to join")
 set(WIFI_PASS "" CACHE STRING "Its passphrase")
 set(ESP_BAUD 115200 CACHE STRING "ESP-AT module's UART baud rate")
+
+# One interface per board: the L432 doesn't have the RAM for both and an
+# application besides (both: 54 KB of its 64 KB taken before any
+# application code; one: about 48.5 KB, heap included).
+if(BRINGUP_ETH AND BRINGUP_WIFI)
+    message(FATAL_ERROR "BRINGUP_ETH and BRINGUP_WIFI are both ON. An L432 board has one network "
+        "interface: for Wi-Fi, use -DBRINGUP_ETH=OFF -DBRINGUP_WIFI=ON. A board with both "
+        "needs a bigger STM32.")
+endif()
+if(NOT BRINGUP_ETH AND NOT BRINGUP_WIFI)
+    message(FATAL_ERROR "Choose a network interface: -DBRINGUP_ETH=ON (W5500) or -DBRINGUP_WIFI=ON (ESP-AT).")
+endif()
 
 set(REPO ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
 set(IT ${REPO}/iTransport/itransport)

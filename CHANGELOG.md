@@ -34,6 +34,7 @@ pull request, newest first.
     binary semaphores, message buffers, `pvPortMalloc` and
     `xTaskGetCurrentTaskHandle`. `SimW5500` gained `onTcpConnect` and
     `onTcpSend` hooks.
+  ([#15](https://github.com/cgriffis46/Claude-iTransport/pull/15))
 - `iRadio/`: a new module for radios, starting with a receiver for the
   Davis Vantage Pro2 / Vue ISS on an RFM69 (SX1231).
   - `davis_protocol`: the US, AU, EU and NZ hop tables, exact transmit
@@ -154,7 +155,7 @@ pull request, newest first.
 
 #### Changed
 - `xNetInterface::toTicks()` is public, for classes built on an interface
-  such as `xMqttClient`.
+  such as `xMqttClient` ([#15](https://github.com/cgriffis46/Claude-iTransport/pull/15)).
 - `iDisplay`: `kDegreeChar` moved from `Font5x7.h` to `iTextSurface.h`,
   as every surface uses it
   ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).

@@ -61,6 +61,7 @@ int main() {
         const NetConfig& l = r.dhcp.lease();
         check(l.ip == r.srv.offerIp && l.subnet == r.srv.subnet && l.gateway == r.srv.router && l.dns == r.srv.dns,
               "lease: address, mask, first router, DNS");
+        check(l.ntp == r.srv.ntp, "and the NTP server (option 42)");
         check(r.dhcp.leaseSeconds() == 3600, "lease time");
         check(r.dhcp.nextWakeMs(r.now) > 1790000 && r.dhcp.nextWakeMs(r.now) <= 1800000, "next wake at T1, half the lease");
     }

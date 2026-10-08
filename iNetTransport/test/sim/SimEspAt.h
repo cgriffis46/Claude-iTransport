@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -27,6 +29,10 @@ public:
     bool v1RecvFormat = false;  // ESP8266 AT 1.7's "+CIPRECVDATA,<len>:<data>"
     int  busyNext = 0;          // answer the next N commands "busy p..."
     bool refuseConnect = false;
+    std::map<std::string, IpAddress> hosts{{"pool.ntp.org", IpAddress(162, 159, 200, 1)}};
+    bool holdDns = false;       // keep AT+CIPDOMAIN's answer until releaseDns()
+    int64_t unixSec = 1791460800;   // the module's clock once synchronised: 2026-10-08 12:00:00 UTC
+    int sntpSyncAfter = 2;      // AT+CIPSNTPTIME? queries that still say 1970 after AT+CIPSNTPCFG
 
     // ---- what happened ----
     std::vector<std::string> cmds;
@@ -88,6 +94,13 @@ public:
         joined_ = false;
         out("WIFI DISCONNECT\r\n");
     }
+    void releaseDns() {
+        std::lock_guard<std::recursive_mutex> g(m_);
+        if (heldDns_.empty()) return;
+        const std::string name = heldDns_;
+        heldDns_.clear();
+        answerDns(name);
+    }
     void reboot() { // a brown-out, say
         std::lock_guard<std::recursive_mutex> g(m_);
         powerOn();
@@ -103,6 +116,7 @@ public:
         for (auto& x : cmds) if (x == c) return true;
         return false;
     }
+    std::string sntpServer() { std::lock_guard<std::recursive_mutex> g(m_); return sntpServer_; }
     std::string lastCmdStarting(const std::string& p) {
         std::lock_guard<std::recursive_mutex> g(m_);
         for (auto it = cmds.rbegin(); it != cmds.rend(); ++it) if (it->compare(0, p.size(), p) == 0) return *it;
@@ -129,6 +143,8 @@ private:
     }
     void powerOn() {
         for (auto& l : links_) l = Link();
+        sntpServer_.clear();
+        heldDns_.clear();
         echo_ = true; joined_ = false; server_ = false; mux_ = false; passive_ = false;
         line_.clear();
         sendLeft_ = 0;
@@ -148,6 +164,13 @@ private:
         return v;
     }
 
+    void answerDns(const std::string& name) {
+        auto it = hosts.find(name);
+        if (it == hosts.end()) { out("+CIPDOMAIN:\"\"\r\n"); out("DNS Fail\r\n"); error(); return; }
+        out("+CIPDOMAIN:\"" + ipStr(it->second) + "\"\r\n");
+        ok();
+    }
+
     void command(const std::string& c) {
         if (c.empty()) return;
         cmds.push_back(c);
@@ -161,6 +184,22 @@ private:
             ++resets;
             powerOn();
             out("\r\n ets Jan  8 2013,rst cause:2, boot mode:(3,6)\r\nload 0x40078000,len 13256\r\n\r\nready\r\n");
+        } else if (c.compare(0, 13, "AT+CIPDOMAIN=") == 0) {
+            const auto f = quoted(c);
+            if (!joined_ || f.empty()) { error(); return; }
+            if (holdDns) heldDns_ = f[0]; else answerDns(f[0]);
+        } else if (c.compare(0, 18, "AT+CIPSNTPCFG=1,0,") == 0) {
+            const auto f = quoted(c);
+            sntpServer_ = f.empty() ? "" : f[0];
+            sntpQueries_ = 0;
+            ok();
+        } else if (c == "AT+CIPSNTPTIME?") {
+            const bool synced = joined_ && !sntpServer_.empty() && sntpQueries_++ >= sntpSyncAfter;
+            const time_t t = synced ? static_cast<time_t>(unixSec) : 0;
+            char b[40];
+            std::strftime(b, sizeof b, "%a %b %e %H:%M:%S %Y", std::gmtime(&t));   // asctime's layout
+            out(std::string("+CIPSNTPTIME:") + b + "\r\n");
+            ok();
         } else if (c == "AT+GMR") {
             out("AT version:2.4.0.0(4c6eb5e - ESP32 - May 20 2022 03:12:58)\r\nSDK version:v4.2.2-dirty\r\n"
                 "compile time(6118fc22):May 20 2022 11:03:44\r\nBin version:2.4.0(WROOM-32)\r\n");
@@ -242,6 +281,8 @@ private:
     std::string line_;
     bool echo_ = true, joined_ = false, server_ = false, mux_ = false, passive_ = false;
     uint16_t serverPort_ = 0;
+    std::string heldDns_, sntpServer_;
+    int sntpQueries_ = 0;
     Link links_[5];
     int sendLink_ = 0;
     unsigned sendLeft_ = 0, sendLen_ = 0;

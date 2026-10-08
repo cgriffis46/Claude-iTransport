@@ -23,6 +23,8 @@
 #include "W5500.h"
 #include "SimW5500.h"
 #include "SimDhcpServer.h"
+#include "SimDnsServer.h"
+#include "SimNtpServer.h"
 #include "EspAt.h"
 #include "SimEspAt.h"
 
@@ -68,6 +70,8 @@ struct Rig {
     std::thread driver;
 
     SimDhcpServer dhcpSrv;
+    SimDnsServer dnsSrv;
+    SimNtpServer ntpSrv;
 
     explicit Rig(W5500::w5500_param_t p = W5500::w5500_param_t(),
                  xNetInterface::Config c = xNetInterface::Config(), bool irq = false, bool dhcp = false) {
@@ -80,9 +84,17 @@ struct Rig {
         net.subnet = IpAddress(255, 255, 255, 0);
         net.gateway = IpAddress(192, 168, 1, 1);
         net.dhcp = dhcp;
-        sim->onUdpSend = [this](uint8_t s, IpAddress, uint16_t, std::vector<uint8_t> data) {
-            const std::vector<uint8_t> reply = dhcpSrv.handle(data.data(), data.size());
-            if (!reply.empty()) sim->peerSendUdp(s, dhcpSrv.server, 67, reply.data(), reply.size());
+        net.dns = dnsSrv.server;
+        dhcpSrv.dns = dnsSrv.server;
+        dhcpSrv.ntp = IpAddress();                     // DHCP names no NTP server unless a test says so
+        ntpSrv.server = IpAddress(162, 159, 200, 1);   // where pool.ntp.org resolves to
+        sim->onUdpSend = [this](uint8_t s, IpAddress dst, uint16_t port, std::vector<uint8_t> data) {
+            std::vector<uint8_t> reply;
+            IpAddress from = dst;
+            if (port == 67) { reply = dhcpSrv.handle(data.data(), data.size()); from = dhcpSrv.server; }
+            if (port == 53 && dst == dnsSrv.server) reply = dnsSrv.handle(data.data(), data.size());
+            if (port == 123 && dst == ntpSrv.server) reply = ntpSrv.handle(data.data(), data.size());
+            if (!reply.empty()) sim->peerSendUdp(s, from, port, reply.data(), reply.size());
         };
         eth->begin(net);
         driver = std::thread([this] { while (!quit) eth->service(20); });
@@ -116,6 +128,8 @@ struct FakeWifi : iWifiDevice {
     bool listen(uint8_t, uint16_t) override { return false; }
     void close(uint8_t s) override { host->socketEvent(s, SocketEvent::Closed); }
     void interrupt() override {}
+    bool resolve(const char*) override { return false; }
+    bool requestTime(const char*) override { return false; }
     void join(const char* s, const char* p) override { ssid = s; pass = p; pendingJoin = 1; }
     void leave() override { joined = false; host->deviceEvent(DeviceEvent::LinkDown); }
     int8_t rssi() const override { return joined ? -55 : 0; }
@@ -143,6 +157,66 @@ int main() {
         check(r.eth->hasAddress(), "hasAddress()");
         const NetConfig a = r.eth->address();
         check(a.ip == r.dhcpSrv.offerIp && a.gateway == r.dhcpSrv.router && a.dns == r.dhcpSrv.dns, "address() is the lease");
+    }
+
+    std::printf("DNS through xEthernet\n");
+    {
+        Rig r;
+        r.eth->waitAddress(1000);
+        IpAddress ip;
+        const int before = r.dnsSrv.queries;
+        check(r.eth->resolve("10.1.2.3", ip, 0) && ip == IpAddress(10, 1, 2, 3) && r.dnsSrv.queries == before,
+              "\"a.b.c.d\" answered at once, nothing asked");
+        auto t0 = steady_clock::now();
+        check(r.eth->resolve("pool.ntp.org", ip, 2000) && ip == IpAddress(162, 159, 200, 1), "resolve() sleeps for the answer");
+        check(msSince(t0) < 500, "promptly");
+        t0 = steady_clock::now();
+        check(!r.eth->resolve("nosuch.example", ip, 2000) && msSince(t0) < 500, "unknown name: false, at once");
+
+        // Two threads at once: they queue, and each gets its own answer.
+        IpAddress a, b;
+        bool okA = false, okB = false;
+        std::thread ta([&] { okA = r.eth->resolve("www.example.com", a, 3000); });
+        std::thread tb([&] { okB = r.eth->resolve("pool.ntp.org", b, 3000); });
+        ta.join();
+        tb.join();
+        check(okA && okB && a == IpAddress(93, 184, 216, 34) && b == IpAddress(162, 159, 200, 1),
+              "two threads resolving at once each get their own answer");
+
+        r.dnsSrv.silent = true;
+        t0 = steady_clock::now();
+        check(!r.eth->resolve("pool.ntp.org", ip, 300), "no answer: false...");
+        check(msSince(t0) >= 290 && msSince(t0) < 600, "...at the timeout");
+        r.dnsSrv.silent = false;
+        check(r.eth->resolve("www.example.com", ip, 3000) && ip == IpAddress(93, 184, 216, 34),
+              "and the next lookup isn't confused by the one given up on");
+    }
+
+    std::printf("time through xEthernet\n");
+    {
+        Rig r;
+        check(eventually([&] { return r.eth->timeValid(); }, 2000), "time set by itself once there is an address");
+        const auto check0 = steady_clock::now();
+        const uint64_t t = r.eth->unixTimeMs();
+        check(t >= r.ntpSrv.unixMs && t < r.ntpSrv.unixMs + 3000, "unixTimeMs(): the server's time, carried on by the tick");
+        sleepMs(200);
+        const uint64_t t2 = r.eth->unixTimeMs();
+        const long d = static_cast<long>(t2 - t) - msSince(check0);
+        check(d > -20 && d < 20, "and it runs at the tick's rate");
+        const int before = r.ntpSrv.requests;
+        check(r.eth->syncTime(2000) && r.ntpSrv.requests == before + 1, "syncTime() asks again, and sleeps for the answer");
+        r.ntpSrv.kod = true;
+        check(!r.eth->syncTime(2000) && r.eth->timeValid(), "a refusal: false, the time kept");
+    }
+
+    std::printf("time from DHCP's NTP server\n");
+    {
+        Rig r(W5500::w5500_param_t(), xNetInterface::Config(), false, /*dhcp=*/true);
+        r.dhcpSrv.ntp = IpAddress(192, 168, 1, 123);
+        r.ntpSrv.server = r.dhcpSrv.ntp;
+        check(r.eth->waitAddress(3000) && r.eth->address().ntp == r.dhcpSrv.ntp, "address() carries option 42");
+        check(eventually([&] { return r.eth->timeValid(); }, 3000) && r.ntpSrv.requests > 0,
+              "time taken from it, not from pool.ntp.org");
     }
 
     std::printf("connect, write, read\n");
@@ -352,6 +426,11 @@ int main() {
         check(!wifi.join("home", "nope", 2000), "wrong passphrase: join() false");
         check(wifi.join("home", "secret", 2000) && wifi.linkUp(), "join() true");
         check(wifi.waitAddress(1000) && wifi.address().ip == sim.ip, "address from the module's DHCP");
+        IpAddress ip;
+        check(wifi.resolve("pool.ntp.org", ip, 3000) && ip == IpAddress(162, 159, 200, 1), "resolve() through AT+CIPDOMAIN");
+        check(wifi.syncTime(8000) && wifi.timeValid(), "syncTime() through the module's SNTP");
+        const uint64_t t = wifi.unixTimeMs();
+        check(t >= uint64_t(sim.unixSec) * 1000 && t < uint64_t(sim.unixSec) * 1000 + 4000, "unixTimeMs()");
         {
             xClient c(wifi);
             check(c.connect(IpAddress(93, 184, 216, 34), 80, 2000), "connect()");

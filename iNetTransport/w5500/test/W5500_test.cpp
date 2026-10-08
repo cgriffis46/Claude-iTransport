@@ -16,6 +16,8 @@
 #include "W5500.h"
 #include "SimW5500.h"
 #include "SimDhcpServer.h"
+#include "SimDnsServer.h"
+#include "SimNtpServer.h"
 #include "W5500Probe.h"
 
 using namespace W5500;
@@ -47,6 +49,15 @@ struct Host : iNetDeviceHost {
 	void socketEvent(uint8_t s, SocketEvent e) override { events.push_back({s, e}); }
 	void deviceEvent(DeviceEvent e) override { dev.push_back(e); }
 	void addressChanged(const NetConfig &c) override { addrs.push_back(c); }
+	int resolvedCount = 0, timeCount = 0;
+	bool resolvedOk = false, timeOk = false;
+	IpAddress resolvedIp;
+	uint64_t timeUnixMs = 0;
+	uint32_t timeAtMs = 0;
+	void resolved(bool ok, const IpAddress &ip) override { ++resolvedCount; resolvedOk = ok; resolvedIp = ip; }
+	void timeReceived(bool ok, uint64_t unixMs, uint32_t atMs) override {
+		++timeCount; timeOk = ok; timeUnixMs = unixMs; timeAtMs = atMs;
+	}
 	void wakeFromIsr() override {}
 	std::vector<NetConfig> addrs;
 
@@ -89,20 +100,30 @@ struct Rig {
 	}
 	void start() { chip->configure(cfg); run(20); }
 
-	// A DHCP server on the simulated network.
+	// DHCP, DNS and NTP servers on the simulated network, by port.
 	SimDhcpServer dhcpSrv;
+	SimDnsServer dnsSrv;
+	SimNtpServer ntpSrv;
 	int udpSends = 0;
 	IpAddress lastUdpDst;
 	uint16_t lastUdpPort = 0;
-	void serveDhcp() {
-		cfg.dhcp = true;
+	void serveUdp() {
 		sim.onUdpSend = [this](uint8_t s, IpAddress dst, uint16_t port, std::vector<uint8_t> data) {
 			++udpSends;
 			lastUdpDst = dst;
 			lastUdpPort = port;
-			const std::vector<uint8_t> reply = dhcpSrv.handle(data.data(), data.size());
-			if (!reply.empty()) sim.peerSendUdp(s, dhcpSrv.server, 67, reply.data(), reply.size());
+			std::vector<uint8_t> reply;
+			IpAddress from;
+			if (port == 67) { reply = dhcpSrv.handle(data.data(), data.size()); from = dhcpSrv.server; }
+			if (port == 53 && dst == dnsSrv.server) { reply = dnsSrv.handle(data.data(), data.size()); from = dnsSrv.server; }
+			if (port == 123 && dst == ntpSrv.server) { reply = ntpSrv.handle(data.data(), data.size()); from = ntpSrv.server; }
+			if (!reply.empty()) sim.peerSendUdp(s, from, port, reply.data(), reply.size());
 		};
+	}
+	void serveDhcp() {
+		cfg.dhcp = true;
+		dhcpSrv.dns = dnsSrv.server;
+		serveUdp();
 	}
 };
 
@@ -177,7 +198,7 @@ int main() {
 		check(r.host.addrs.size() == 1 && r.host.addrs[0].ip == r.cfg.ip, "addressChanged() with the static address at start-up");
 		check(r.chip->socketCount() == 7, "7 sockets for the interface: socket 7 kept for DHCP");
 		w5500_param_t p;
-		p.dhcp = false;
+		p.serviceSocket = false;
 		Rig r8(p);
 		check(r8.chip->socketCount() == 8, "all 8 with dhcp off");
 		r8.serveDhcp();
@@ -234,6 +255,107 @@ int main() {
 		r.dhcpSrv.offerIp = IpAddress(192, 168, 1, 88);
 		r.run(5000);
 		check(r.host.addrs.back().ip == IpAddress(192, 168, 1, 88), "and a new lease is taken");
+	}
+
+	std::printf("DNS\n");
+	{
+		Rig r;
+		r.cfg.dns = r.dnsSrv.server;	// static address, with a DNS server
+		r.serveUdp();
+		r.start();
+		check(r.chip->resolve("pool.ntp.org"), "resolve() taken");
+		r.run(10);
+		check(r.host.resolvedCount == 1 && r.host.resolvedOk && r.host.resolvedIp == IpAddress(162, 159, 200, 1), "answered");
+		check(r.lastUdpDst == r.dnsSrv.server && r.lastUdpPort == 53 && r.sim.sockReg16(7, w5500_Sn_PORT) == 68,
+		      "asked the configured server, port 53, from the service socket");
+		check(r.sim.status(7) == w5500_SOCK_UDP, "service socket open with a static address too");
+
+		r.chip->resolve("www.example.com");
+		r.run(10);
+		check(r.host.resolvedCount == 2 && r.host.resolvedIp == IpAddress(93, 184, 216, 34), "through a CNAME");
+		r.chip->resolve("nosuch.example");
+		r.run(10);
+		check(r.host.resolvedCount == 3 && !r.host.resolvedOk, "unknown name: not ok");
+
+		r.dnsSrv.silent = true;
+		r.chip->resolve("pool.ntp.org");
+		r.run(10);
+		r.chip->resolve("www.example.com");	// replaces the first
+		r.dnsSrv.silent = false;
+		r.run(3000);
+		check(r.host.resolvedCount == 4 && r.host.resolvedIp == IpAddress(93, 184, 216, 34),
+		      "a second resolve() replaces the first: one answer, the second's");
+
+		const uint8_t junk[4] = {1, 2, 3, 4};
+		r.sim.peerSendUdp(7, IpAddress(10, 9, 8, 7), 9999, junk, sizeof junk);
+		r.run(20);
+		check(r.chip->ready() && r.host.resolvedCount == 4, "a datagram from an unknown port is dropped");
+
+		r.dnsSrv.silent = true;
+		r.chip->resolve("pool.ntp.org");
+		r.run(20);
+		r.sim.spiFailNext = true;
+		r.run(20);
+		check(r.host.resolvedCount == 5 && !r.host.resolvedOk, "the chip failing mid-lookup answers not ok, at once");
+	}
+
+	std::printf("time\n");
+	{
+		Rig r;
+		r.serveDhcp();	// the lease names the DNS server, and an NTP server
+		r.start();
+		r.run(100);
+		check(r.host.addrs.size() == 1 && r.host.addrs[0].ntp == r.dhcpSrv.ntp, "the lease carries DHCP's NTP server (option 42)");
+
+		r.ntpSrv.server = r.dhcpSrv.ntp;
+		check(r.chip->requestTime("192.168.1.123"), "requestTime() taken");
+		r.run(10);
+		check(r.host.timeCount == 1 && r.host.timeOk, "answered");
+		check(r.host.timeUnixMs >= r.ntpSrv.unixMs && r.host.timeUnixMs <= r.ntpSrv.unixMs + 5 && r.host.timeAtMs > 1000,
+		      "the server's time, at a moment on our ms counter");
+		check(r.lastUdpDst == r.ntpSrv.server && r.lastUdpPort == 123, "asked port 123 of the address given");
+
+		r.dnsSrv.a["time.example"] = r.ntpSrv.server;
+		const int dnsBefore = r.dnsSrv.queries;
+		r.chip->requestTime("time.example");
+		r.run(10);
+		check(r.host.timeCount == 2 && r.host.timeOk && r.dnsSrv.queries == dnsBefore + 1, "a server name: looked up, then asked");
+		r.chip->requestTime("nowhere.example");
+		r.run(10);
+		check(r.host.timeCount == 3 && !r.host.timeOk, "a name that doesn't resolve: not ok");
+		r.ntpSrv.kod = true;
+		r.chip->requestTime("192.168.1.123");
+		r.run(10);
+		check(r.host.timeCount == 4 && !r.host.timeOk, "a kiss-o'-death: not ok");
+	}
+
+	std::printf("held until there is an address\n");
+	{
+		Rig r;
+		r.serveDhcp();
+		r.dhcpSrv.silent = true;
+		r.start();
+		r.chip->resolve("pool.ntp.org");
+		r.chip->requestTime("pool.ntp.org");
+		r.run(100);
+		check(r.host.resolvedCount == 0 && r.host.timeCount == 0, "no address: nothing asked");
+		r.ntpSrv.server = IpAddress(162, 159, 200, 1);	// what pool.ntp.org resolves to
+		r.dhcpSrv.silent = false;
+		r.run(2100);
+		check(r.host.resolvedOk && r.host.timeOk, "both answered once leased");
+	}
+
+	std::printf("no service socket\n");
+	{
+		w5500_param_t p;
+		p.serviceSocket = false;
+		Rig r(p);
+		r.cfg.dns = r.dnsSrv.server;
+		r.start();
+		check(!r.chip->resolve("pool.ntp.org") && !r.chip->requestTime("192.168.1.123"),
+		      "resolve() and requestTime() refused");
+		r.run(10);
+		check(r.host.resolvedCount == 0 && r.host.timeCount == 0, "and no answer follows");
 	}
 
 	std::printf("not a W5500\n");

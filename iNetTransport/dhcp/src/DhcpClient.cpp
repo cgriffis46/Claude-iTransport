@@ -15,7 +15,7 @@ constexpr uint8_t kMagic[4] = {99, 130, 83, 99};
 
 enum Opt : uint8_t {
     OptPad = 0, OptSubnet = 1, OptRouter = 3, OptDns = 6, OptRequestedIp = 50, OptLease = 51,
-    OptMsgType = 53, OptServerId = 54, OptParams = 55, OptMaxSize = 57, OptT1 = 58, OptT2 = 59,
+    OptNtp = 42, OptMsgType = 53, OptServerId = 54, OptParams = 55, OptMaxSize = 57, OptT1 = 58, OptT2 = 59,
     OptClientId = 61, OptEnd = 255
 };
 
@@ -37,7 +37,7 @@ uint32_t clamp(uint32_t v, uint32_t lo, uint32_t hi) { return v < lo ? lo : (v >
 // What one reply carried.
 struct Reply {
     uint8_t   type = 0;
-    IpAddress yiaddr, subnet, router, dns, serverId;
+    IpAddress yiaddr, subnet, router, dns, ntp, serverId;
     bool      hasSubnet = false, hasServerId = false;
     uint32_t  leaseSec = 0, t1Sec = 0, t2Sec = 0;
     bool      hasLease = false, hasT1 = false, hasT2 = false;
@@ -61,6 +61,7 @@ bool parse(const uint8_t* p, size_t len, Reply& r) {
         case OptSubnet:   if (n >= 4) { r.subnet = ipAt(v); r.hasSubnet = true; } break;
         case OptRouter:   if (n >= 4) r.router = ipAt(v); break;   // the first of the list
         case OptDns:      if (n >= 4) r.dns = ipAt(v); break;
+        case OptNtp:      if (n >= 4) r.ntp = ipAt(v); break;
         case OptServerId: if (n >= 4) { r.serverId = ipAt(v); r.hasServerId = true; } break;
         case OptLease:    if (n >= 4) { r.leaseSec = be32(v); r.hasLease = true; } break;
         case OptT1:       if (n >= 4) { r.t1Sec = be32(v); r.hasT1 = true; } break;
@@ -205,6 +206,7 @@ DhcpClient::Action DhcpClient::receive(const uint8_t* p, size_t len, uint32_t no
         lease_.subnet = r.hasSubnet ? r.subnet : IpAddress(255, 255, 255, 0);
         lease_.gateway = r.router;
         lease_.dns = r.dns;
+        lease_.ntp = r.ntp;
         if (r.hasServerId) server_ = r.serverId;
         requested_ = r.yiaddr;
 
@@ -270,8 +272,8 @@ size_t DhcpClient::build(uint8_t* b, size_t cap, uint8_t type) const {
         std::memcpy(o, server_.b, 4); o += 4;
     }
     *o++ = OptMaxSize; *o++ = 2; *o++ = static_cast<uint8_t>(kMaxPacket >> 8); *o++ = static_cast<uint8_t>(kMaxPacket);
-    *o++ = OptParams; *o++ = 6;
-    *o++ = OptSubnet; *o++ = OptRouter; *o++ = OptDns; *o++ = OptLease; *o++ = OptT1; *o++ = OptT2;
+    *o++ = OptParams; *o++ = 7;
+    *o++ = OptSubnet; *o++ = OptRouter; *o++ = OptDns; *o++ = OptNtp; *o++ = OptLease; *o++ = OptT1; *o++ = OptT2;
     *o++ = OptEnd;
     return kTxPacket;
 }

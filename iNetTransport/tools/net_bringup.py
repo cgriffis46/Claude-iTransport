@@ -5,6 +5,7 @@ The bring-up firmware (iNetTransport/examples/stm32l432kc_bringup) serves
   echo    TCP 7   everything sent comes back
   discard TCP 9   everything sent is dropped
   chargen TCP 19  a known pattern, until we close
+  time    TCP 37  the board's clock, set by NTP (RFC 868)
 on the W5500 interface, and echo alone on the ESP-AT one. This script
 checks each byte that comes back, and measures what the link does:
 
@@ -18,13 +19,15 @@ Exit status 0 when every test passed. Standard library only.
 import argparse
 import os
 import random
+import struct
 import socket
 import statistics
 import sys
 import threading
 import time
 
-ECHO, DISCARD, CHARGEN = 7, 9, 19
+ECHO, DISCARD, CHARGEN, TIME = 7, 9, 19, 37
+RFC868_TO_UNIX = 2208988800
 
 
 def chargen_byte(offset):
@@ -164,6 +167,29 @@ def test_download(r, host, timeout, total):
         r.add("download (chargen)", False, str(e))
 
 
+def test_time(r, host, timeout, tolerance):
+    """The board's clock against this PC's (both should be NTP-synced)."""
+    try:
+        with connect(host, TIME, timeout) as s:
+            data = b""
+            while len(data) < 4:
+                chunk = s.recv(4 - len(data))
+                if not chunk:
+                    break
+                data += chunk
+        if len(data) < 4:
+            r.add("time (NTP)", False, "the board has no time yet: check its log for the NTP step")
+            return
+        board = struct.unpack(">I", data)[0] - RFC868_TO_UNIX
+        diff = board - time.time()
+        ok = abs(diff) <= tolerance
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(board))
+        r.add("time (NTP)", ok, f"board says {stamp}, {diff:+.1f} s from this PC"
+              + ("" if ok else f" (more than {tolerance} s: is this PC's clock right?)"))
+    except OSError as e:
+        r.add("time (NTP)", False, str(e))
+
+
 def test_churn(r, host, timeout, n):
     try:
         for i in range(n):
@@ -230,6 +256,11 @@ def h_discard(c):
             pass
 
 
+def h_time(c):
+    with c:
+        c.sendall(struct.pack(">I", int(time.time()) + RFC868_TO_UNIX))
+
+
 def h_chargen(c):
     with c:
         off = 0
@@ -242,14 +273,14 @@ def h_chargen(c):
 
 
 def self_test(args):
-    global ECHO, DISCARD, CHARGEN
+    global ECHO, DISCARD, CHARGEN, TIME
     base = random.randint(20000, 40000)
-    ECHO, DISCARD, CHARGEN = base, base + 1, base + 2
+    ECHO, DISCARD, CHARGEN, TIME = base, base + 1, base + 2, base + 3
     stop = threading.Event()
-    for port, h in ((ECHO, h_echo), (DISCARD, h_discard), (CHARGEN, h_chargen)):
+    for port, h in ((ECHO, h_echo), (DISCARD, h_discard), (CHARGEN, h_chargen), (TIME, h_time)):
         threading.Thread(target=serve, args=(port, h, stop), daemon=True).start()
     time.sleep(0.3)
-    print(f"self-test against a local stand-in on ports {ECHO}, {DISCARD}, {CHARGEN}")
+    print(f"self-test against a local stand-in on ports {ECHO}, {DISCARD}, {CHARGEN}, {TIME}")
     args.host = "127.0.0.1"
     try:
         return run(args)
@@ -270,6 +301,7 @@ def run(args):
         test_upload(r, args.host, args.timeout, total)
         test_download(r, args.host, args.timeout, total)
         test_concurrent(r, args.host, args.timeout, total // 4)
+        test_time(r, args.host, args.timeout, args.time_tolerance)
     return r
 
 
@@ -280,6 +312,8 @@ def main():
     p.add_argument("--kb", type=int, default=1024, help="KB for each throughput test (default 1024)")
     p.add_argument("--churn", type=int, default=50, help="connect/close cycles (default 50)")
     p.add_argument("--timeout", type=float, default=10.0, help="seconds before a stalled step fails (default 10)")
+    p.add_argument("--time-tolerance", type=float, default=2.0,
+                   help="seconds the board's clock may differ from this PC's (default 2)")
     p.add_argument("--self-test", action="store_true", help="run against a local stand-in, to check the script")
     args = p.parse_args()
     if not args.self_test and not args.host:

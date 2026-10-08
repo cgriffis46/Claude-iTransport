@@ -59,6 +59,39 @@ inline int linkEvent(const char *s, const char *word) {
 	return strcmp(s + 2, word) == 0 ? s[0] - '0' : -1;
 }
 
+// "Www Mmm dd hh:mm:ss yyyy" (asctime, UTC) as Unix seconds; 0 if it
+// doesn't parse.
+inline uint64_t parseAsctime(const char *s) {
+	static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+	char tok[5][12];
+	int n = 0;
+	while (*s && n < 5) {
+		while (*s == ' ') ++s;
+		int i = 0;
+		while (*s && *s != ' ' && i < 11) tok[n][i++] = *s++;
+		tok[n][i] = 0;
+		if (i) ++n;
+		while (*s && *s != ' ') ++s;
+	}
+	if (n < 5 || strlen(tok[1]) != 3) return 0;
+	const char *m = strstr(months, tok[1]);
+	if (!m || (m - months) % 3) return 0;
+	const int mon = static_cast<int>(m - months) / 3 + 1;
+	const int day = atoi(tok[2]);
+	int hh = 0, mm = 0, ss = 0;
+	if (sscanf(tok[3], "%d:%d:%d", &hh, &mm, &ss) != 3) return 0;
+	int y = atoi(tok[4]);
+	if (y < 1970 || day < 1 || day > 31 || hh > 23 || mm > 59 || ss > 60) return 0;
+	// Days from civil (H. Hinnant), for a proleptic Gregorian date.
+	y -= mon <= 2;
+	const int era = y / 400;
+	const int yoe = y - era * 400;
+	const int doy = (153 * (mon + (mon > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+	const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	const int64_t days = static_cast<int64_t>(era) * 146097 + doe - 719468;
+	return static_cast<uint64_t>(days) * 86400u + static_cast<uint64_t>(hh * 3600 + mm * 60 + ss);
+}
+
 // Skips a quoted field (backslash escapes), returns what follows it.
 inline const char *skipQuoted(const char *s) {
 	if (*s != '"') return s;
@@ -113,6 +146,25 @@ void espat<TTransport>::close(uint8_t s) {
 		return;
 	}
 	_sock[s].req = Sock::ReqClose;
+}
+
+template <typename TTransport>
+bool espat<TTransport>::resolve(const char *name) {
+	// ESP-AT takes domain names of up to 64 characters.
+	if (!_configured || name == nullptr || strlen(name) > 64) return false;
+	strcpy(_dnsName, name);
+	_dnsReq = true;
+	++_dnsGen;	// an answer still coming for an earlier name won't count
+	return true;
+}
+
+template <typename TTransport>
+bool espat<TTransport>::requestTime(const char *server) {
+	if (!_configured || server == nullptr || strlen(server) > 64) return false;
+	strcpy(_ntpServer, server);
+	_ntpReq = true;
+	_ntpPolling = false;
+	return true;
 }
 
 template <typename TTransport>
@@ -266,6 +318,10 @@ void espat<TTransport>::onLine(const char *l) {
 		if (*p == ',') p = skipQuoted(p + 1);
 		if (*p == ',') p = strchr(p + 1, ',');
 		if (p && *p == ',') _rssi = static_cast<int8_t>(atoi(p + 1));
+	} else if (startsWith(l, "+CIPDOMAIN:")) {
+		parseIp(l + 11, _dnsResult);
+	} else if (startsWith(l, "+CIPSNTPTIME:")) {
+		_ntpSec = parseAsctime(l + 13);
 	} else if (startsWith(l, "AT version:")) {
 		strncpy(_firmware, l, sizeof _firmware - 1);
 		_firmware[sizeof _firmware - 1] = 0;
@@ -523,6 +579,36 @@ void espat<TTransport>::finish(Res res, uint32_t nowMs) {
 	case Cmd::ServerTimeout:
 		if (res == Res::Timeout) fail(nowMs);
 		break;
+	case Cmd::Domain:
+		if (res == Res::Timeout) { fail(nowMs); break; }
+		_dnsBusy = false;
+		// Only the answer to the latest resolve() counts; a newer one
+		// is already waiting to be sent.
+		if (_dnsCmdGen == _dnsGen && _host) _host->resolved(ok && !_dnsResult.isZero(), _dnsResult);
+		break;
+	case Cmd::SntpCfg:
+		if (res == Res::Timeout) { fail(nowMs); break; }
+		if (!ok) {
+			_ntpBusy = false;
+			_ntpConfigured[0] = 0;
+			if (_host) _host->timeReceived(false, 0, nowMs);
+			break;
+		}
+		strcpy(_ntpConfigured, _ntpServer);
+		_ntpPolling = true;
+		_ntpPollStart = nowMs;
+		_ntpLastPoll = nowMs - espat_sntp_poll_ms;	// ask straight away
+		break;
+	case Cmd::SntpTime:
+		if (res == Res::Timeout) { fail(nowMs); break; }
+		// Until the module has synchronised it reports 1970.
+		if (ok && _ntpSec >= 1577836800u /* 2020 */) {
+			_ntpPolling = false;
+			_ntpBusy = false;
+			// It reports whole seconds: the middle of the second is the best guess.
+			if (_host) _host->timeReceived(true, _ntpSec * 1000u + 500u, nowMs);
+		}
+		break;
 	case Cmd::Close:
 		if (res == Res::Timeout) { fail(nowMs); break; }
 		// ERROR too: the link was already gone.
@@ -778,6 +864,51 @@ uint32_t espat<TTransport>::schedule(uint32_t nowMs) {
 		}
 	}
 
+	// DNS and time, once there is an address.
+	if (!_net.ip.isZero()) {
+		if (_dnsReq) {
+			_dnsReq = false;
+			_dnsBusy = true;
+			_dnsCmdGen = _dnsGen;
+			_dnsResult = IpAddress();
+			memcpy(_cmdBuf, "AT+CIPDOMAIN=\"", 14);
+			size_t at = appendEscaped(14, _dnsName);
+			_cmdBuf[at++] = '"';
+			_cmdLen = at;
+			issue(Cmd::Domain, espat_dns_timeout_ms, nowMs);
+			return 0;
+		}
+		if (_ntpReq) {
+			_ntpReq = false;
+			_ntpBusy = true;
+			if (strcmp(_ntpServer, _ntpConfigured) == 0) {
+				_ntpPolling = true;	// the module already syncs with it: just read its time
+				_ntpPollStart = nowMs;
+				_ntpLastPoll = nowMs - espat_sntp_poll_ms;
+			} else {
+				memcpy(_cmdBuf, "AT+CIPSNTPCFG=1,0,\"", 19);	// on, UTC, this server
+				size_t at = appendEscaped(19, _ntpServer);
+				_cmdBuf[at++] = '"';
+				_cmdLen = at;
+				issue(Cmd::SntpCfg, espat_cmd_timeout_ms, nowMs);
+				return 0;
+			}
+		}
+		if (_ntpPolling && (nowMs - _ntpLastPoll) >= espat_sntp_poll_ms) {
+			if ((nowMs - _ntpPollStart) >= espat_sntp_wait_ms) {
+				_ntpPolling = false;
+				_ntpBusy = false;
+				if (_host) _host->timeReceived(false, 0, nowMs);	// never synchronised
+				return 0;
+			}
+			_ntpLastPoll = nowMs;
+			_ntpSec = 0;
+			formatCmd("AT+CIPSNTPTIME?");
+			issue(Cmd::SntpTime, espat_cmd_timeout_ms, nowMs);
+			return 0;
+		}
+	}
+
 	// Received data, if the reader has room for it.
 	for (uint8_t s = 0; s < espat_links; ++s) {
 		Sock &k = _sock[s];
@@ -830,6 +961,10 @@ uint32_t espat<TTransport>::schedule(uint32_t nowMs) {
 		const uint32_t w = remaining(nowMs, _lastAp, _param.apPollMs);
 		if (w < wait) wait = w;
 	}
+	if (_ntpPolling) {
+		const uint32_t w = remaining(nowMs, _ntpLastPoll, espat_sntp_poll_ms);
+		if (w < wait) wait = w;
+	}
 	return wait == 0 ? 1 : wait;
 }
 
@@ -838,6 +973,7 @@ uint32_t espat<TTransport>::schedule(uint32_t nowMs) {
 template <typename TTransport>
 uint32_t espat<TTransport>::fail(uint32_t nowMs) {
 	_stFailures.fetch_add(1, std::memory_order_relaxed);
+	failQueries();
 	for (uint8_t s = 0; s < espat_links; ++s) {
 		Sock &k = _sock[s];
 		const bool open = k.mode != Sock::Closed;
@@ -860,6 +996,24 @@ uint32_t espat<TTransport>::fail(uint32_t nowMs) {
 	emitDev(DeviceEvent::Failed);
 	enter(St::error, nowMs);
 	return 0;
+}
+
+// The module is restarting: whoever asked a question hears now rather
+// than at their timeout. The module forgets its SNTP setting too.
+template <typename TTransport>
+void espat<TTransport>::failQueries() {
+	if (_dnsReq || _dnsBusy) {
+		_dnsReq = false;
+		_dnsBusy = false;
+		if (_host) _host->resolved(false, IpAddress());
+	}
+	if (_ntpReq || _ntpBusy) {
+		_ntpReq = false;
+		_ntpBusy = false;
+		_ntpPolling = false;
+		if (_host) _host->timeReceived(false, 0, 0);
+	}
+	_ntpConfigured[0] = 0;
 }
 
 } /* namespace ESPAT */

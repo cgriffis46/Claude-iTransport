@@ -32,7 +32,9 @@
  *  SpiBlockTransport}.cpp, itransport/hw/stm32/src/{
  *  Stm32HalSpiBlockTransport,Stm32SpiItCallbacks}.cpp,
  *  iNetTransport/hw/freertos/src/{xNetInterface,xClient}.cpp,
- *  iNetTransport/dhcp/src/DhcpClient.cpp; include path iNetTransport/dhcp/inc too.
+ *  iNetTransport/dhcp/src/DhcpClient.cpp, dns/src/DnsClient.cpp and
+ *  sntp/src/SntpClient.cpp; include paths iNetTransport/dhcp/inc,
+ *  dns/inc and sntp/inc too.
  */
 
 #include "main.h"
@@ -87,11 +89,11 @@ extern "C" void net_app_start(void) {
 	static W5500::w5500_param_t param = [] {
 		W5500::w5500_param_t p;
 		for (int i = 0; i < 8; ++i) {	// 2 KB each for sockets 0-3 and DHCP's socket 7
-			const bool used = i < 4 || i == W5500::w5500_dhcp_socket;
+			const bool used = i < 4 || i == W5500::w5500_service_socket;
 			p.rxBufKb[i] = used ? 2 : 0;
 			p.txBufKb[i] = used ? 2 : 0;
 		}
-		p.dhcpSeed = HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2();
+		p.seed = HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2();
 		p.pollMs = 100;					// INT is wired: polling is only a backstop
 		return p;
 	}();

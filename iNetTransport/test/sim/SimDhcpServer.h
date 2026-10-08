@@ -15,6 +15,7 @@ public:
     IpAddress subnet{255, 255, 255, 0};
     IpAddress router{192, 168, 1, 254};
     IpAddress dns{8, 8, 8, 8};
+    IpAddress ntp{192, 168, 1, 123};  // option 42; all zeros: not offered
     uint32_t  leaseSec = 3600;
     bool      nak = false;      // NAK every REQUEST
     bool      silent = false;   // answer nothing
@@ -76,6 +77,7 @@ public:
             const uint8_t routers[8] = {router.b[0], router.b[1], router.b[2], router.b[3], 10, 0, 0, 1};
             opt(3, routers, 8); // two routers: the client takes the first
             opt(6, dns.b, 4);
+            if (!ntp.isZero()) opt(42, ntp.b, 4);
         }
         out[o++] = 255;
         return out;

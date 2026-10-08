@@ -26,10 +26,11 @@
  *
  *  TCP sockets for the interface; a static address or DHCP. The W5500
  *  has 8 sockets, each one connection (a listening socket becomes the
- *  connection when a peer arrives). With w5500_param_t::dhcp set (the
- *  default) the last one, socket 7, is kept back for DHCP, which runs
- *  over it in UDP mode (iNetTransport/dhcp/DhcpClient), and the interface gets
- *  sockets 0..6.
+ *  connection when a peer arrives). With w5500_param_t::serviceSocket
+ *  set (the default) the last one, socket 7, is kept back as a UDP
+ *  socket on port 68 for DHCP, DNS and SNTP (iNetTransport/dhcp,
+ *  dns, sntp: pure-logic clients this driver runs), told apart by the
+ *  peer's port (67, 53, 123), and the interface gets sockets 0..6.
  */
 
 #ifndef W5500_H_
@@ -44,6 +45,8 @@
 #include "iNetDevice.h"
 #include "W5500Regs.h"
 #include "DhcpClient.h"
+#include "DnsClient.h"
+#include "SntpClient.h"
 
 namespace W5500 {
 
@@ -59,8 +62,9 @@ const uint32_t w5500_send_timeout_ms	= 60000;	// SEND to SEND_OK, backstop as ab
 // transfer. RAM: the driver keeps one buffer this size.
 const uint16_t w5500_chunk_bytes = 1024;
 
-// The socket DHCP uses, when w5500_param_t::dhcp is set.
-const uint8_t w5500_dhcp_socket = 7;
+// The UDP service socket (DHCP, DNS, SNTP), when
+// w5500_param_t::serviceSocket is set.
+const uint8_t w5500_service_socket = 7;
 
 typedef struct w5500_param_t {
 	// Per-socket buffer sizes in KB: 0, 1, 2, 4, 8 or 16. Each
@@ -81,13 +85,16 @@ typedef struct w5500_param_t {
 	// some of those steps.
 	uint32_t busyPollMs = 2;
 	uint32_t linkPollMs = 500;
-	// Keep socket 7 back for DHCP, so NetConfig::dhcp can be used. It
+	// Keep socket 7 back as the UDP service socket, for DHCP
+	// (NetConfig::dhcp), DNS (resolve()) and SNTP (requestTime()). It
 	// needs at least 1 KB each way in rxBufKb/txBufKb. Turn it off to
-	// give the interface all 8 sockets with a static address.
-	bool     dhcp = true;
-	// Mixed into DHCP transaction IDs, so devices booting together
-	// don't collide: e.g. HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2().
-	uint32_t dhcpSeed = 0;
+	// give the interface all 8 sockets, with a static address and no
+	// name lookups or time.
+	bool     serviceSocket = true;
+	// Mixed into DHCP transaction IDs, DNS query IDs and SNTP nonces,
+	// so devices booting together don't collide and answers are hard
+	// to forge: e.g. HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2().
+	uint32_t seed = 0;
 } w5500_param_t;
 
 // Counters, for bring-up and field diagnostics. stats() may be called
@@ -140,18 +147,18 @@ enum class w5500_state_t : uint8_t {
 	tx_wrote,
 	tx_send,
 	tx_sent,
-	dhcp_open_port,		// socket 7: UDP, port 68
-	dhcp_open_cmd,
-	dhcp_open_sr,
-	dhcp_open_check,
-	dhcp_rx_again,		// a datagram: Sn_RX_RSR twice, then its 8-byte header, then the data
-	dhcp_rx_check,
-	dhcp_rx_hdr,
-	dhcp_rx_data,
-	dhcp_rx_recv,
-	dhcp_tx_ptr,		// a DHCP packet: Sn_DIPR/DPORT written, now Sn_TX_WR
-	dhcp_tx_data,
-	dhcp_tx_wr,
+	svc_open_port,		// the service socket: UDP, port 68
+	svc_open_cmd,
+	svc_open_sr,
+	svc_open_check,
+	svc_rx_again,		// a datagram: Sn_RX_RSR twice, then its 8-byte header, then the data
+	svc_rx_check,
+	svc_rx_hdr,
+	svc_rx_data,
+	svc_rx_recv,
+	svc_tx_ptr,			// a datagram: Sn_DIPR/DPORT written, now Sn_TX_WR
+	svc_tx_data,
+	svc_tx_wr,
 	cmd_poll,			// Sn_CR, until the chip has taken the command
 	cmd_check,
 	xfer_issue,			// every register access passes through these two
@@ -170,13 +177,15 @@ public:
 
 	// iNetDevice
 	void attach(iNetDeviceHost &host) override { _host = &host; }
-	uint8_t socketCount() const override { return _param.dhcp ? w5500_dhcp_socket : w5500_sockets; }
+	uint8_t socketCount() const override { return _param.serviceSocket ? w5500_service_socket : w5500_sockets; }
 	void configure(const NetConfig &cfg) override;
 	uint32_t poll(uint32_t nowMs) override;
 	bool connect(uint8_t s, const IpAddress &ip, uint16_t port, uint16_t localPort) override;
 	bool listen(uint8_t s, uint16_t port) override;
 	void close(uint8_t s) override;
 	void interrupt() override { _irq = true; _stInterrupts.fetch_add(1, std::memory_order_relaxed); }
+	bool resolve(const char *name) override;
+	bool requestTime(const char *server) override;
 
 	// iEthernetDevice
 	uint16_t speedMbps() const override;
@@ -244,7 +253,17 @@ private:
 	void fillAddr();			// _w[0..18): GAR, SUBR, SHAR, SIPR from _net
 	void setAddress(const NetConfig &net);
 	void dhcpEvent(DhcpClient::Event ev);
-	uint32_t dhcpStep(uint32_t nowMs);
+	void dnsEvent(DnsClient::Event ev);
+	void ntpDnsEvent(DnsClient::Event ev, uint32_t nowMs);
+	void sntpEvent(SntpClient::Event ev);
+	void failQueries();			// answer any DNS/time request in progress: failed
+	bool svcUsable() const {	// the service socket is kept, and has buffers
+		return _param.serviceSocket && _param.rxBufKb[w5500_service_socket] != 0
+		       && _param.txBufKb[w5500_service_socket] != 0;
+	}
+	uint32_t serviceStep(uint32_t nowMs);
+	uint32_t sendService(const IpAddress &dst, uint16_t port, size_t len, uint32_t nowMs);
+	uint32_t nextRand() { _rand = _rand * 1664525u + 1013904223u; return _rand; }
 	bool bufConfigValid() const;
 
 	void enter(w5500_state_t next, uint32_t nowMs) { _state = next; _since = nowMs; }
@@ -266,8 +285,19 @@ private:
 	IpAddress       _prevIp;			// last address held, to ask DHCP for again
 	DhcpClient      _dhcp;
 	bool            _dhcpOn = false;	// this configuration uses DHCP
-	bool            _dhcpOpen = false;	// socket 7 open in UDP mode
+	bool            _svcOpen = false;	// socket 7 open in UDP mode
 	bool            _addrDirty = false;	// _net changed: write it to the chip and report it
+
+	// DNS and SNTP, over the service socket.
+	DnsClient       _dns;				// resolve()
+	DnsClient       _ntpDns;			// the time server's name, for requestTime()
+	SntpClient      _sntp;
+	bool            _dnsReq = false;	// resolve() asked, not yet started
+	bool            _ntpReq = false;	// requestTime() asked, not yet started
+	bool            _ntpBusy = false;	// a time request in progress (DNS or SNTP)
+	char            _dnsName[DnsClient::kMaxName + 2] = {0};
+	char            _ntpServer[DnsClient::kMaxName + 2] = {0};
+	uint32_t        _rand = 0;
 	iNetDeviceHost *_host = nullptr;
 	Sock            _sock[w5500_sockets];
 

@@ -9,7 +9,8 @@ Linux), written in C++ and tested on a PC. Owner: cgriffis46.
 iTransport/itransport/   transports: the seam between "how we talk to a chip"
                          and "what the chip means"
 isensor/                 sensor base classes and one folder per sensor driver
-iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi, DHCP)
+iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
+                         DHCP, DNS, SNTP)
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server
 safeTransport/           safety: Safe interface, devices, zones, relays, CAN,
                          CIP Safety placeholders, events
@@ -95,7 +96,7 @@ cmake -S PLCTransport -B build                                  # plc_tags
 ```
 
 Last known results: isensor 18 tests (its 13 drivers plus itransport's
-tests), iTransport 5, iNetTransport 9, all passing. Each test file also
+tests), iTransport 5, iNetTransport 11, all passing. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
@@ -184,6 +185,9 @@ STM32L432KC (L4).
 9. Built the STM32_Static_Lib_Src iTransport/iSensor libraries.
 10. Wrote non-blocking MMC56x3 and LSM303DLHC drivers and moved those
     two libraries onto them.
+11. Added DNS and SNTP to iNetTransport (`DnsClient`, `SntpClient`,
+    `xNetInterface::resolve()`/`unixTimeMs()`), on the W5500's service
+    socket and through the ESP-AT module's own commands.
 
 ## Open items
 

@@ -49,6 +49,15 @@ struct Host : iNetDeviceHost {
 	void socketEvent(uint8_t s, SocketEvent e) override { events.push_back({s, e}); }
 	void deviceEvent(DeviceEvent e) override { dev.push_back(e); }
 	void addressChanged(const NetConfig &c) override { addrs.push_back(c); }
+	int resolvedCount = 0, timeCount = 0;
+	bool resolvedOk = false, timeOk = false;
+	IpAddress resolvedIp;
+	uint64_t timeUnixMs = 0;
+	uint32_t timeAtMs = 0;
+	void resolved(bool ok, const IpAddress &ip) override { ++resolvedCount; resolvedOk = ok; resolvedIp = ip; }
+	void timeReceived(bool ok, uint64_t unixMs, uint32_t atMs) override {
+		++timeCount; timeOk = ok; timeUnixMs = unixMs; timeAtMs = atMs;
+	}
 
 	bool has(int s, SocketEvent e) const { for (auto &p : events) if (p.first == s && p.second == e) return true; return false; }
 	bool hasDev(DeviceEvent e) const { for (auto d : dev) if (d == e) return true; return false; }
@@ -248,6 +257,59 @@ int main() {
 		r.esp->listen(2, 9090);
 		r.run(20);
 		check(r.host.has(2, SocketEvent::Failed), "a second port can't be served: Failed");
+	}
+
+	std::printf("DNS\n");
+	{
+		Rig r;
+		r.start();
+		r.esp->resolve("pool.ntp.org");
+		r.run(50);
+		check(r.host.resolvedCount == 0, "held until joined");
+		r.joinUp();
+		check(r.host.resolvedCount == 1 && r.host.resolvedOk && r.host.resolvedIp == IpAddress(162, 159, 200, 1),
+		      "AT+CIPDOMAIN answered");
+		check(r.sim.lastCmdStarting("AT+CIPDOMAIN") == "AT+CIPDOMAIN=\"pool.ntp.org\"", "as ESP-AT wants");
+		r.esp->resolve("nosuch.example");
+		r.run(20);
+		check(r.host.resolvedCount == 2 && !r.host.resolvedOk, "unknown name: not ok");
+		check(!r.esp->resolve(std::string(65, 'a').c_str()), "over 64 characters: refused (the firmware's limit)");
+
+		r.sim.hosts["b.example"] = IpAddress(10, 0, 0, 2);
+		r.sim.holdDns = true;
+		r.esp->resolve("pool.ntp.org");
+		r.run(20);
+		r.esp->resolve("b.example");	// while the first is still being looked up
+		r.sim.holdDns = false;
+		r.sim.releaseDns();
+		r.run(20);
+		check(r.host.resolvedCount == 3 && r.host.resolvedIp == IpAddress(10, 0, 0, 2),
+		      "a second resolve() replaces the first: one answer, the second's");
+	}
+
+	std::printf("time\n");
+	{
+		Rig r;
+		r.start();
+		r.joinUp();
+		check(r.esp->requestTime("pool.ntp.org"), "requestTime() taken");
+		r.run(500);
+		check(r.host.timeCount == 0, "not before the module has synchronised");
+		r.run(3000);
+		check(r.sim.sntpServer() == "pool.ntp.org", "AT+CIPSNTPCFG=1,0 (UTC) with the server");
+		check(r.host.timeCount == 1 && r.host.timeOk && r.host.timeUnixMs == uint64_t(r.sim.unixSec) * 1000 + 500,
+		      "AT+CIPSNTPTIME? polled until it isn't 1970, then read (to the second, +500 ms)");
+		const size_t cmds = r.sim.cmds.size();
+		r.esp->requestTime("pool.ntp.org");
+		r.run(50);
+		bool reconfigured = false;
+		for (size_t i = cmds; i < r.sim.cmds.size(); ++i) reconfigured |= r.sim.cmds[i].compare(0, 13, "AT+CIPSNTPCFG") == 0;
+		check(r.host.timeCount == 2 && r.host.timeOk && !reconfigured, "same server again: read at once, not reconfigured");
+
+		r.sim.sntpSyncAfter = 1000;	// never synchronises
+		r.esp->requestTime("time.example");
+		r.run(16000);
+		check(r.host.timeCount == 3 && !r.host.timeOk, "a module that never synchronises: not ok after 15 s");
 	}
 
 	std::printf("busy\n");

@@ -5,7 +5,8 @@
 #   hw/freertos/{inc,src}    xNetInterface, xEthernet, xWifi, xClient:
 #                            a driver thread, FreeRTOS queue, stream
 #                            buffers and event groups
-#   dhcp/                    DHCP client as pure logic, with a host test
+#   dhcp/ dns/ sntp/         DHCP, DNS and SNTP clients as pure logic, each
+#                            with a host test
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
@@ -82,8 +83,10 @@ if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
     target_link_libraries(xnet PUBLIC inet_core)
 endif()
 
-# --- DHCP and the chip drivers ----------------------------------------------
+# --- DHCP, DNS, SNTP and the chip drivers ----------------------------------
 add_subdirectory(dhcp)
+add_subdirectory(dns)
+add_subdirectory(sntp)
 add_subdirectory(w5500)
 add_subdirectory(espat)
 

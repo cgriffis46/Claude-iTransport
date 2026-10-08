@@ -18,10 +18,12 @@ pull request, newest first.
   datasheet's power-up, reset and clear waits, and recovers by itself,
   custom characters included. Backlight, display on/off and eight custom
   characters. Host test with 39 checks against a simulated LCD that
-  flags timing and E-edge setup violations.
+  flags timing and E-edge setup violations
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
 - `iTextSurface::showEditCursor()`: `xTextField` marks the cell it is
   editing, which a character LCD shows with its blinking cursor, as it
-  cannot draw inverse.
+  cannot draw inverse
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
 
 - `iDisplay`: long press and auto-repeat buttons. `xButtonConfig` makes a
   button plain, long press (a short press is `Pressed` on release, a long
@@ -29,7 +31,8 @@ pull request, newest first.
   while held). `xGuiButtonGroup` runs the periodic CMSIS-RTOS2 timer that
   posts `Held` and `Repeat` to the GUI's queue. Menus and fields step on
   `Repeat`, and holding Enter is back in a menu and cancel in a field.
-  `gui_test` now has 128 checks.
+  `gui_test` now has 128 checks
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
 - `iDisplay/`: a new module for displays and a GUI to run on them.
   - `display_core`: `iTextSurface` (a grid of character cells, so the
     same menus run on a graphic or character display), `MonoCanvas` (a
@@ -53,6 +56,7 @@ pull request, newest first.
     simulated queue.
   - Compiled for Cortex-M4 and Cortex-M0+ with `arm-none-eabi-g++ 13.3`
     (`-std=gnu++14 -fno-exceptions -fno-rtti`). Not run on hardware.
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13))
 - `iNetTransport/dns/DnsClient`: a DNS client written as pure logic, for
   one A-record lookup at a time. It checks the reply's ID and question,
   follows CNAMEs and retries three times over 10 s. Host test with 27
@@ -85,7 +89,8 @@ pull request, newest first.
 
 #### Changed
 - `iDisplay`: `kDegreeChar` moved from `Font5x7.h` to `iTextSurface.h`,
-  as every surface uses it.
+  as every surface uses it
+  ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
 - W5500: socket 7 is now a UDP service socket for DHCP, DNS and SNTP,
   open whenever it is kept back, with a static address too.
   `w5500_param_t::dhcp` is now `serviceSocket`, `dhcpSeed` is now `seed`,

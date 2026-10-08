@@ -10,6 +10,30 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- `iRadio/`: a new module for radios, starting with a receiver for the
+  Davis Vantage Pro2 / Vue ISS on an RFM69 (SX1231).
+  - `davis_protocol`: the US, AU, EU and NZ hop tables, exact transmit
+    intervals, bit reversal, the Davis CRC (direct and repeated),
+    `decode()` for every known message type, `DavisSchedule` (which
+    channel to listen on and until when, for up to eight stations, with
+    discovery, missed-packet tracking and loss after 50 misses) and
+    `DavisWeather` (a station's latest readings and rain total).
+  - `davis_rfm69<TTransport>`: the receiver as a non-blocking state
+    machine. Checks the chip version, configures it for Davis, reads the
+    sync word back, retunes per the schedule, and reads PayloadReady from
+    DIO0 or by polling.
+  - `xdavis_rfm69`: the receiver in its own FreeRTOS task. Packets go out
+    through a queue, text lines through a stream buffer, and commands come
+    in through a queue. DIO0 wakes the task through a task notification.
+  - Host tests: `davis_test`, `davis_rfm69_test` (against a simulated
+    RFM69 and ISS stations with real airtime) and `xdavis_rfm69_test`
+    (over a single threaded FreeRTOS stand-in). Compiled for Cortex-M4F
+    and Cortex-M0+ against the FreeRTOS V11.1.0 headers. Not run on
+    hardware.
+- `SPITransport::setAddressBit()`: `AddressBit::WriteHigh` for chips that
+  set bit 7 of the address to write (Semtech SX1231 / RFM69, SX127x).
+  `ReadHigh`, the old behaviour, stays the default. Five new checks in
+  `itransport_test`.
 - `iDisplay/hd44780`: a non-blocking HD44780 character LCD driver (16x1
   up to 40x2 and 20x4) behind an I2C port expander, the PCF8574 board or
   Adafruit's MCP23008 backpack, with `xhd44780` for CMSIS-RTOS2. It is an

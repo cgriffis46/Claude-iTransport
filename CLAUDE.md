@@ -14,6 +14,8 @@ iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server
 iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
+iRadio/                  radios: the Davis ISS receiver on an RFM69, with
+                         a FreeRTOS task (queues, stream buffer)
 safeTransport/           safety: Safe interface, devices, zones, relays, CAN,
                          CIP Safety placeholders, events
 ```
@@ -75,6 +77,24 @@ older style) and `SensorStateMachine`.
   `Refresh`). Screens specific to an application stay in the
   application (e.g. FeatherM0_Davis_ISS_Ethernet's weather screens).
 
+### iRadio
+- `davis/` pure logic (`davis_protocol` library): `DavisProtocol` (hop
+  tables, `intervalSixteenths()`, `reverseBits()`, `crc16()`,
+  `checkCrc()`, `decode()`), `DavisSchedule` (per-station sync, misses,
+  discovery; times in 1/16 ms, signed differences), `DavisWeather`.
+- `davis_rfm69<TTransport>` (header only, `davis/src/davis_rfm69.tpp`):
+  a `SensorStateMachine`; register writes are queued as ops and run one
+  transfer each. It sets `SPITransport::AddressBit::WriteHigh` on an
+  SPITransport (the RFM69 sets bit 7 to write) and reads the sync word
+  back after configuring. Good packets go to the virtual `deliver()`.
+- `hw/freertos/xdavis_rfm69.h` uses native FreeRTOS (queue, stream
+  buffer, task notifications), like iNetTransport's hw/freertos;
+  CMSIS-RTOS2 has no stream buffer. `sleep()` is `ulTaskNotifyTake()`,
+  woken by `onDio0FromISR()` and by commands.
+- `test/sim/SimDavis.h`: RFM69 at register level plus ISS stations with
+  6.7 ms airtime and 1 ms RX settling; `test/stub/` is a single threaded
+  FreeRTOS in which time passes only inside `ulTaskNotifyTake()`.
+
 ## How a sensor driver is written
 
 Follow an existing driver (`lps35hw` for registers, `HMC6352` for
@@ -126,11 +146,14 @@ cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST      # builds, no test
 cmake -S PLCTransport -B build                                  # plc_tags
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # ssd1306_test, gui_test
+cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
+      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
 ```
 
 Last known results: isensor 18 tests (its 13 drivers plus itransport's
 tests), iTransport 5, iNetTransport 11, iDisplay 8 (ssd1306_test,
-hd44780_test, gui_test and itransport's 5), all passing. Each test file also
+hd44780_test, gui_test and itransport's 5), iRadio 8 (davis_test,
+davis_rfm69_test, xdavis_rfm69_test and itransport's 5), all passing. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
@@ -229,6 +252,9 @@ STM32L432KC (L4).
 13. Long press and auto-repeat buttons (`Held`, `Repeat`) through
     `xGuiButtonGroup`'s timer.
 14. HD44780 character LCD driver (PCF8574 and MCP23008 backpacks).
+15. Added `iRadio/`: the Davis ISS receiver on an RFM69, written new
+    (the sketch's DavisRFM69 is CC-BY-SA), and
+    `SPITransport::setAddressBit()` for Semtech radios.
 
 ## Open items
 
@@ -245,6 +271,8 @@ STM32L432KC (L4).
   direct GPIO, not the 74HC595/SPI side). No inactivity timeout back to home (post `Home` from an
   application timer). FeatherM0_Davis_ISS_Ethernet's screens have not
   been moved onto it.
+- `iRadio`: not run against an RFM69 or an ISS. Repeater packets are
+  delivered on request but never used for timing; no transmit.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;
   the files it names are already gone.
 - `safeTransport/sensor_fw.zip` and its `*.html` files are old reference

@@ -4,7 +4,7 @@
 
 // Generic SPI transport: the five ISensorTransport transfer calls
 // expressed as SPI operations — chip-select, the read/write framing
-// (kReadBit convention, dummy clock bytes to drive full-duplex
+// (the read/write bit on the address, dummy clock bytes to drive full-duplex
 // reads), and the tx/rx scratch buffers. Bus arbitration, the
 // transfer-completion signal and the busy/failed bookkeeping are
 // inherited from BusTransport, shared with I2CTransport: a transfer
@@ -28,6 +28,16 @@ public:
     // goes low, so two devices are never selected at once.
     SPITransport(void* spiHandle, void* csPort, uint16_t csPin, void* busMutex);
     ~SPITransport() override = default;
+
+    // Which way round bit 7 of a register address says read or write.
+    // Bosch, ST and most sensors set it to read (ReadHigh, the default).
+    // Semtech's radios (SX1231 / RFM69, SX127x / RFM9x) set it to write.
+    // writeRegs()/readRegs() take the plain register number either way
+    // and put the bit on themselves; writeBytes()/readBytes() send no
+    // address and are not affected.
+    enum class AddressBit : uint8_t { ReadHigh, WriteHigh };
+    void setAddressBit(AddressBit b) { addressBit_ = b; }
+    AddressBit addressBit() const { return addressBit_; }
 
     bool writeReg(uint8_t reg, uint8_t value) override;
     bool writeRegs(uint8_t reg, const uint8_t* buf, uint8_t len) override;
@@ -66,7 +76,7 @@ protected:
     uint16_t csPin_;
 
 private:
-    static constexpr uint8_t kReadBit = 0x80;  // BMP280/most Bosch/ST sensors: MSB set = read
+    static constexpr uint8_t kRwBit = 0x80;    // bit 7 of the address: read or write, see AddressBit
     static constexpr uint8_t kMaxLen  = 1 + kMaxWriteLen; // 1 addr byte + up to 32 data bytes
 
     // Shared tail of all five transfer calls, entered with the bus
@@ -83,4 +93,5 @@ private:
                                  // (clocked in while the address went out), 0 after readBytes()
     uint8_t* destBuf_ = nullptr; // caller's buffer, filled in onTransferLanded() after a read
     bool     isRead_  = false;
+    AddressBit addressBit_ = AddressBit::ReadHigh;
 };

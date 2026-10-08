@@ -192,6 +192,28 @@ int main() {
         check(buf[0] == 0xA1 && buf[2] == 0xA3, "byte clocked in during the address is skipped");
     }
 
+    std::printf("SPI AddressBit::WriteHigh (Semtech SX1231 / RFM69): bit 7 set to write\n");
+    {
+        FakeSPI bus;
+        check(bus.addressBit() == SPITransport::AddressBit::ReadHigh, "ReadHigh by default");
+        bus.setAddressBit(SPITransport::AddressBit::WriteHigh);
+        uint8_t frf[3] = {0xE3, 0xDA, 0x7C};
+        bus.writeRegs(0x07, frf, 3);
+        check(bus.tx == Bytes({0x87, 0xE3, 0xDA, 0x7C}) && !bus.wasFullDuplex, "writeRegs(0x07): sent 87 E3 DA 7C");
+        bus.complete(); bus.isBusy();
+        uint8_t buf[2] = {0};
+        bus.readRegs(0x10, buf, 2);
+        check(bus.tx == Bytes({0x10, 0xFF, 0xFF}) && bus.wasFullDuplex, "readRegs(0x10): sent 10, bit 7 clear");
+        bus.complete(); bus.isBusy();
+        check(buf[0] == 0xA1 && buf[1] == 0xA2, "and reads as before");
+        bus.readRegs(0x90, buf, 1);
+        check(bus.tx[0] == 0x10, "a register number with bit 7 set is still a read");
+        bus.complete(); bus.isBusy();
+        bus.writeReg(0x01, 0x04);
+        check(bus.tx == Bytes({0x81, 0x04}), "writeReg(0x01, 0x04): sent 81 04");
+        bus.complete(); bus.isBusy();
+    }
+
     std::printf("SPI writeBytes() / readBytes(): raw, no address byte\n");
     {
         FakeSPI bus;

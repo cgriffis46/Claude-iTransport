@@ -58,6 +58,7 @@ option(SENSOR_FW_BUILD_TESTS
 add_library(sensor_transport STATIC
     inc/ISensorTransport.h
     inc/iTransport.h
+    inc/iClock.h
     inc/BusTransport.h
     src/BusTransport.cpp
     inc/I2CTransport.h
@@ -167,6 +168,8 @@ if(SENSOR_FW_HARDWARE STREQUAL "STM32")
         hw/stm32/inc/Stm32HalUartTransport.h
         hw/stm32/src/Stm32HalUartTransport.cpp
         hw/stm32/src/Stm32UartItCallbacks.cpp
+        hw/stm32/inc/Stm32RtcClock.h
+        hw/stm32/src/Stm32RtcClock.cpp
     )
 
     target_include_directories(Stm32TransportLibrary PUBLIC
@@ -313,4 +316,17 @@ if(SENSOR_FW_BUILD_TESTS)
     )
     target_link_libraries(stm32_uart_transport_test PRIVATE sensor_transport)
     add_test(NAME stm32_uart_transport_test COMMAND stm32_uart_transport_test)
+
+    # The real Stm32RtcClock.cpp against the simulated RTC in stub_hal_rtc/.
+    add_executable(stm32_rtc_clock_test
+        test/stm32_rtc_clock_test.cpp
+        test/stub_hal_rtc/fake_rtc.cpp
+        hw/stm32/src/Stm32RtcClock.cpp
+    )
+    target_include_directories(stm32_rtc_clock_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub_hal_rtc
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/stm32/inc
+    )
+    target_link_libraries(stm32_rtc_clock_test PRIVATE sensor_transport)
+    add_test(NAME stm32_rtc_clock_test COMMAND stm32_rtc_clock_test)
 endif()

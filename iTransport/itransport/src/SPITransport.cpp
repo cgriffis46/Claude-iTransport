@@ -32,7 +32,8 @@ bool SPITransport::writeRegs(uint8_t reg, const uint8_t* buf, uint8_t len) {
     if (!beginTransfer()) return false;
 
     xferLen_  = static_cast<uint8_t>(len + 1);
-    txBuf_[0] = reg & static_cast<uint8_t>(~kReadBit);
+    txBuf_[0] = addressBit_ == AddressBit::WriteHigh ? static_cast<uint8_t>(reg | kRwBit)
+                                                     : static_cast<uint8_t>(reg & ~kRwBit);
     for (uint8_t i = 0; i < len; ++i) txBuf_[i + 1] = buf[i];
     return start(/*isRead=*/false);
 }
@@ -45,7 +46,8 @@ bool SPITransport::readRegs(uint8_t reg, uint8_t* buf, uint8_t len) {
     rxSkip_  = 1; // rxBuf_[0] captured garbage while we clocked out the address byte
     xferLen_ = static_cast<uint8_t>(len + 1);
 
-    txBuf_[0] = reg | kReadBit;
+    txBuf_[0] = addressBit_ == AddressBit::WriteHigh ? static_cast<uint8_t>(reg & ~kRwBit)
+                                                     : static_cast<uint8_t>(reg | kRwBit);
     for (uint8_t i = 1; i < xferLen_; ++i) txBuf_[i] = 0xFF; // dummy bytes to drive the clock
     return start(/*isRead=*/true);
 }

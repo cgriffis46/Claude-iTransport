@@ -106,6 +106,17 @@ older style) and `SensorStateMachine`.
   6.7 ms airtime and 1 ms RX settling; `test/stub/` is a single threaded
   FreeRTOS in which time passes only inside `ulTaskNotifyTake()`.
 
+### iNetTransport on the STM32L432KC
+- An L432 board has one network interface, the W5500 or an ESP-AT module,
+  never both. The bring-up firmware's build refuses both. A design that
+  needs both goes on a bigger STM32.
+- The L432 is most likely the node that sends data out (a transmitter:
+  MQTT, an HTTP client), not the one that receives or serves. Size new
+  features for that. `xHttpServer` is for bigger boards (or
+  `maxClients = 1` on an L432).
+- RAM: 64 KB. The bring-up firmware with one interface takes about 48.5 KB
+  (34 KB of it the FreeRTOS heap); with both it was 54 KB.
+
 ## How a sensor driver is written
 
 Follow an existing driver (`lps35hw` for registers, `HMC6352` for

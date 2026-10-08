@@ -7,7 +7,10 @@ firmware (Wi-Fi over a UART). There are also DHCP, DNS and SNTP clients,
 so an interface gets its address, looks up names and keeps the time, and
 an MQTT client (`xMqttClient`) and a web server (`xHttpServer`) that run
 over either interface.
-Target: STM32L432KC.
+Target: STM32L432KC, with one interface (the W5500 or an ESP module, not
+both), most likely as a node that sends its data out: an MQTT or HTTP
+client. The servers (`xHttpServer`) fit it with `maxClients = 1`, but are
+meant for bigger STM32s.
 
 ## Layers
 
@@ -320,7 +323,7 @@ ring.
 that builds with CMake and the STM32CubeL4 package, with no CubeMX project.
 It checks the W5500's wiring at each SPI speed and then runs at the fastest
 one that passes. It checks the INT line and the PHY, then brings up DHCP
-and/or the ESP module, looks up a name and sets the time. It logs each step
+or the ESP module (one per build), looks up a name and sets the time. It logs each step
 with what to check when it fails, and serves echo, discard, chargen and
 time. `tools/net_bringup.py` drives those services from a PC, checking
 every byte, measuring latency and throughput, and comparing the board's

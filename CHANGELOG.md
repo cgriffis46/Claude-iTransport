@@ -184,6 +184,10 @@ pull request, newest first.
   ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
+- The STM32L432KC bring-up firmware builds one network interface, the
+  W5500 or the ESP module: `BRINGUP_ETH` and `BRINGUP_WIFI` both on (or
+  both off) now stops the build. An L432 board has one interface. One
+  leaves about 15 KB of RAM free beyond the 34 KB heap; both left 10 KB.
 - `xNetInterface::toTicks()` is public, for classes built on an interface
   such as `xMqttClient` ([#15](https://github.com/cgriffis46/Claude-iTransport/pull/15)).
 - `iDisplay`: `kDegreeChar` moved from `Font5x7.h` to `iTextSurface.h`,

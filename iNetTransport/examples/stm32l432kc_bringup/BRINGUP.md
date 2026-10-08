@@ -69,13 +69,17 @@ cmake -S . -B build -DSTM32CUBE_L4_DIR=$HOME/STM32Cube/Repository/STM32Cube_FW_L
 cmake --build build
 ```
 
-With Wi-Fi too:
+With Wi-Fi instead:
 
 ```sh
-cmake -S . -B build -DSTM32CUBE_L4_DIR=... -DBRINGUP_WIFI=ON -DWIFI_SSID="my-ssid" -DWIFI_PASS="my-pass"
+cmake -S . -B build -DSTM32CUBE_L4_DIR=... -DBRINGUP_ETH=OFF -DBRINGUP_WIFI=ON -DWIFI_SSID="my-ssid" -DWIFI_PASS="my-pass"
 ```
 
-Other options: `-DBRINGUP_ETH=OFF`, `-DETH_DHCP=OFF` (the static address is
+A build has one interface, never both: an L432 board has either the W5500
+or the ESP module, and the build stops if both are asked for. (A board
+with both needs a bigger STM32.)
+
+Other options: `-DETH_DHCP=OFF` (the static address is
 set in `Core/Inc/config.h`), and `-DESP_BAUD=...`.
 
 Flash it in one of these ways:
@@ -139,7 +143,7 @@ The firmware stops at the first step that can't work and says why. In order:
 | `[wifi] the module never answered "AT"` | TX/RX swapped, baud rate (ESP-AT v2 defaults to 115200), EN not high, or the supply sagging (use a separate regulator) |
 | `[wifi] join failed` | the SSID or passphrase, the band (ESP modules are 2.4 GHz only), or range |
 | `*** PANIC: stack overflow in task 'x'` | raise that thread's `stack_size` in `bringup.cpp` / `services.cpp` |
-| `*** PANIC: FreeRTOS heap exhausted` | raise `configTOTAL_HEAP_SIZE` in `FreeRTOSConfig.h` (about 10 KB of RAM is free with both interfaces built in) |
+| `*** PANIC: FreeRTOS heap exhausted` | raise `configTOTAL_HEAP_SIZE` in `FreeRTOSConfig.h` (about 15 KB of RAM is left beyond the 34 KB heap) |
 | `*** PANIC: HardFault at pc=...` | `arm-none-eabi-addr2line -e build/inet_bringup.elf <pc>` gives the line; report it |
 
 Once it's running, the `[stats]` line every 10 s is the health check:

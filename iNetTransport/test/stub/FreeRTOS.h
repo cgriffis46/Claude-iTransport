@@ -3,7 +3,8 @@
 // threads (std::thread), with one mutex and condition variable behind
 // every object, so a test can have a user thread genuinely asleep in
 // client.read() while the driver thread runs. A tick is 1 ms of real
-// time. task.h, queue.h, stream_buffer.h, event_groups.h and semphr.h all just
+// time. task.h, queue.h, stream_buffer.h, message_buffer.h, event_groups.h and
+// semphr.h all just
 // include this file.
 #pragma once
 #include <cassert>
@@ -11,6 +12,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -140,21 +142,89 @@ inline EventBits_t xEventGroupWaitBits(EventGroupHandle_t h, EventBits_t want, B
     return got;
 }
 
-// ---- mutexes (semphr.h) ----
-struct SimMutex { bool held; };
-typedef SimMutex* SemaphoreHandle_t;
+// ---- tasks ----
+typedef void* TaskHandle_t;
+inline TaskHandle_t xTaskGetCurrentTaskHandle() { static thread_local char me; return &me; }
 
-inline SemaphoreHandle_t xSemaphoreCreateMutex() { return new SimMutex{false}; }
+// ---- heap ----
+inline void* pvPortMalloc(size_t n) { return std::malloc(n); }
+inline void vPortFree(void* p) { std::free(p); }
+
+// ---- semaphores and mutexes (semphr.h) ----
+// One kind of object for all three: a mutex is a binary semaphore that
+// starts given; a recursive mutex also counts its owner's takes.
+struct SimSemaphore { int count; TaskHandle_t owner; int depth; };
+typedef SimSemaphore* SemaphoreHandle_t;
+
+inline SemaphoreHandle_t xSemaphoreCreateMutex() { return new SimSemaphore{1, nullptr, 0}; }
+inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() { return new SimSemaphore{1, nullptr, 0}; }
+inline SemaphoreHandle_t xSemaphoreCreateBinary() { return new SimSemaphore{0, nullptr, 0}; }   // starts taken
 inline void vSemaphoreDelete(SemaphoreHandle_t h) { delete h; }
 inline BaseType_t xSemaphoreTake(SemaphoreHandle_t h, TickType_t ticks) {
     std::unique_lock<std::mutex> l(simrtos::mu());
-    if (!simrtos::waitFor(l, ticks, [&] { return !h->held; })) return pdFAIL;
-    h->held = true;
+    if (!simrtos::waitFor(l, ticks, [&] { return h->count > 0; })) return pdFAIL;
+    h->count = 0;
     return pdPASS;
 }
 inline BaseType_t xSemaphoreGive(SemaphoreHandle_t h) {
     std::lock_guard<std::mutex> l(simrtos::mu());
-    h->held = false;
+    if (h->count > 0) return pdFAIL;   // already given
+    h->count = 1;
     simrtos::cv().notify_all();
     return pdPASS;
+}
+inline BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t h, TickType_t ticks) {
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    std::unique_lock<std::mutex> l(simrtos::mu());
+    if (h->owner == me) { ++h->depth; return pdPASS; }
+    if (!simrtos::waitFor(l, ticks, [&] { return h->count > 0; })) return pdFAIL;
+    h->count = 0;
+    h->owner = me;
+    h->depth = 1;
+    return pdPASS;
+}
+inline BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t h) {
+    std::lock_guard<std::mutex> l(simrtos::mu());
+    if (h->owner != xTaskGetCurrentTaskHandle()) return pdFAIL;
+    if (--h->depth == 0) {
+        h->owner = nullptr;
+        h->count = 1;
+        simrtos::cv().notify_all();
+    }
+    return pdPASS;
+}
+
+// ---- message buffers (message_buffer.h) ----
+// Whole messages, each taking its length plus 4 bytes of the capacity,
+// as in FreeRTOS. A receive buffer too small for the next message gets
+// nothing, and the message stays.
+struct SimMessages { size_t cap, used; std::deque<std::vector<uint8_t>> q; };
+typedef SimMessages* MessageBufferHandle_t;
+
+inline MessageBufferHandle_t xMessageBufferCreate(size_t bytes) { return new SimMessages{bytes, 0, {}}; }
+inline void vMessageBufferDelete(MessageBufferHandle_t h) { delete h; }
+inline size_t xMessageBufferSend(MessageBufferHandle_t h, const void* data, size_t len, TickType_t ticks) {
+    std::unique_lock<std::mutex> l(simrtos::mu());
+    if (len + 4 > h->cap) return 0;
+    if (!simrtos::waitFor(l, ticks, [&] { return h->cap - h->used >= len + 4; })) return 0;
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    h->q.emplace_back(p, p + len);
+    h->used += len + 4;
+    simrtos::cv().notify_all();
+    return len;
+}
+inline size_t xMessageBufferReceive(MessageBufferHandle_t h, void* buf, size_t cap, TickType_t ticks) {
+    std::unique_lock<std::mutex> l(simrtos::mu());
+    if (!simrtos::waitFor(l, ticks, [&] { return !h->q.empty(); })) return 0;
+    const size_t n = h->q.front().size();
+    if (n > cap) return 0;
+    std::memcpy(buf, h->q.front().data(), n);
+    h->q.pop_front();
+    h->used -= n + 4;
+    simrtos::cv().notify_all();
+    return n;
+}
+inline size_t xMessageBufferSpacesAvailable(MessageBufferHandle_t h) {
+    std::lock_guard<std::mutex> l(simrtos::mu());
+    return h->cap - h->used;
 }

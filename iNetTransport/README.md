@@ -4,13 +4,16 @@ Network interfaces on top of itransport: `xEthernet`, `xWifi` and `xClient`
 for FreeRTOS, with two chip drivers underneath. One is the WIZnet W5500
 (Ethernet over SPI). The other is an Espressif module running ESP-AT
 firmware (Wi-Fi over a UART). There are also DHCP, DNS and SNTP clients,
-so an interface gets its address, looks up names and keeps the time.
+so an interface gets its address, looks up names and keeps the time, and
+an MQTT client (`xMqttClient`) that runs over either interface.
 Target: STM32L432KC.
 
 ## Layers
 
 ```
- user threads   xClient  connect / listen / accept / read / write / stop
+ user threads   xMqttClient  publish / subscribe / receive    (mqtt/: MqttClient)
+                   |       its own thread keeps the session, over an xClient
+                xClient  connect / listen / accept / read / write / stop
                    |       (each sleeps on its socket's event group, with a timeout)
  hw/freertos    xEthernet / xWifi  ->  xNetInterface
                    |       driver thread; FreeRTOS queue (inbox),
@@ -143,6 +146,52 @@ firmware, over any `iTransport` (`Stm32HalUartTransport` on the L432).
 - The module has one server port, so every listening client must use the
   same port. Throughput is the UART's: about 11 KB/s each way at 115200 baud.
 
+## MQTT
+
+```cpp
+xMqttClient::Config cfg;
+cfg.host = "broker.local";                  // a name or "a.b.c.d"; port 1883
+cfg.session.clientId = "node-1";            // also username, password, keepAliveSec, will, cleanSession
+static xMqttClient mqtt(eth, cfg);          // or wifi
+mqtt.begin();
+osThreadNew([](void* m) { static_cast<xMqttClient*>(m)->run(); }, &mqtt, &mqttAttr);
+
+// any other thread:
+mqtt.subscribe("nodes/node-1/cmd/#", 1);    // true once granted; kept across reconnects
+mqtt.publish("nodes/node-1/temp", "21.5");  // QoS 0
+mqtt.publish("nodes/node-1/alarm", "hi", 1, false, 2000);   // QoS 1: true once acknowledged
+uint8_t buf[1100];                          // Config::maxPacket + 4
+MqttMessage m;
+if (mqtt.receive(buf, sizeof buf, m, 5000)) { /* m.topic, m.payload, m.len */ }   // sleeps until one comes
+```
+
+- MQTT 3.1.1, QoS 0 and 1, no TLS. `mqtt/MqttClient` is the protocol as
+  pure logic, like DHCP: packets in, packets out, the session's timers.
+  It allocates nothing; the buffers are the caller's.
+- `xMqttClient::run()` is the MQTT thread. It waits for an address, looks
+  the broker up, connects, and reconnects with backoff
+  (`reconnectMinMs`, doubling up to `reconnectMaxMs`). It sends PINGREQ
+  every keepalive while idle and drops the connection when the broker
+  stops answering (no PINGRESP within half the keepalive, at least 3 s)
+  or doesn't send CONNACK within 10 s. `stop()` ends with a DISCONNECT,
+  so the broker doesn't publish the will.
+- After a reconnect, subscriptions are sent again in one SUBSCRIBE (unless
+  the broker kept the session). QoS 1 messages not yet acknowledged are
+  sent again with DUP. A QoS 1 publish while disconnected is kept and sent
+  once connected; up to `MqttClient::kMaxInFlight` (4) at a time.
+- Publishes go out from the calling thread, under the session's mutex, so
+  they don't wait for the MQTT thread to wake. Received messages go into
+  a FreeRTOS message buffer (`inboxBytes`) for `receive()`. With
+  `setCallback()` they go to a function on the MQTT thread instead, which
+  may publish. A message that doesn't fit is dropped rather than waited
+  for. If it is QoS 1 it isn't acknowledged, so the broker sends it again
+  after the next reconnect. `stats()` counts these.
+- RAM: `maxPacket` (1 KB) twice plus a framing buffer of the same size,
+  `inFlightBytes` (2 KB) for kept QoS 1 messages, and `inboxBytes` (2 KB),
+  all from the FreeRTOS heap, plus one socket's stream buffers. Up to 8
+  subscriptions of up to 64 characters are remembered. On the target the
+  code is about 6 KB (`-Os`, Cortex-M4).
+
 ## Using it
 
 Ethernet, from a CubeMX project (complete in
@@ -238,6 +287,19 @@ cmake --build build && ctest --test-dir build
   join (escaping included), send and receive, both receive formats, closes,
   listen, `AT+CIPDOMAIN`, the module's SNTP, an unexpected reboot, and
   Wi-Fi loss.
+- `MqttClient_test`: CONNECT's bytes (credentials, will, keepalive),
+  refusal and a missing CONNACK, QoS 0 and 1 publishes and PUBACK, store and
+  forward with DUP on resend, subscribe and receive (with PUBACK for QoS 1),
+  re-subscribing after a reconnect, keepalive and an unanswered ping,
+  malformed and oversized packets, and topic matching, against a simulated
+  broker (`test/sim/SimMqttBroker.h`) with its own decoder.
+- `xMqtt_test`: `xMqttClient` on real threads over the W5500 driver, with
+  the simulated chip handing the TCP connection to the simulated broker.
+  It covers looking the broker up, a `receive()` sleeping until a message
+  comes, a QoS 1 publish waiting for its ack, a dropped connection
+  (reconnect, re-subscribe, DUP resend), a refused connection with backoff
+  and store and forward, keepalive, callback mode (publishing from the
+  callback), a full inbox, and four threads publishing at once.
 - `xNet_test`: the real FreeRTOS-layer sources on real threads, against a
   FreeRTOS simulation (`test/stub`), with both drivers. It covers blocking
   reads and their timeouts, 20 KB each way, a close waking a sleeping

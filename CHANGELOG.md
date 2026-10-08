@@ -10,6 +10,30 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- MQTT 3.1.1 client in `iNetTransport/`, QoS 0 and 1, no TLS.
+  - `mqtt/MqttClient`: the protocol as pure logic, allocating nothing.
+    It covers CONNECT (credentials, will, keepalive, clean session),
+    publish, subscribe and unsubscribe, keepalive with PINGREQ, and
+    timeouts for CONNACK and PINGRESP. Unacknowledged QoS 1 messages are
+    kept and resent with DUP after a reconnect, including ones published
+    while disconnected. Subscriptions are sent again after a reconnect.
+    The decoder streams input and skips packets too big for its buffer.
+  - `hw/freertos/xMqttClient`: the client on any `xNetInterface`
+    (`xEthernet`, `xWifi`). Its own thread looks the broker up, connects
+    and reconnects with backoff. Publishing from any thread goes straight
+    out under the session's mutex, and a QoS 1 publish can wait for its
+    ack. Received messages go to a FreeRTOS message buffer for a blocking
+    `receive()`, or to a callback.
+  - Host tests: `MqttClient_test` (45 checks) against
+    `test/sim/SimMqttBroker.h`, and `xMqtt_test` (80 checks) on real
+    threads over the W5500 driver, with `SimW5500` handing its TCP
+    connections to the broker. Both pass under ASan/UBSan and TSan, and
+    `xMqtt_test` passed 20 runs under load. Compiled for Cortex-M4 as
+    C++14. Not run on hardware or against a real broker.
+  - The FreeRTOS host simulation (`test/stub`) gained recursive mutexes,
+    binary semaphores, message buffers, `pvPortMalloc` and
+    `xTaskGetCurrentTaskHandle`. `SimW5500` gained `onTcpConnect` and
+    `onTcpSend` hooks.
 - `iRadio/`: a new module for radios, starting with a receiver for the
   Davis Vantage Pro2 / Vue ISS on an RFM69 (SX1231).
   - `davis_protocol`: the US, AU, EU and NZ hop tables, exact transmit
@@ -129,6 +153,8 @@ pull request, newest first.
   ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
+- `xNetInterface::toTicks()` is public, for classes built on an interface
+  such as `xMqttClient`.
 - `iDisplay`: `kDegreeChar` moved from `Font5x7.h` to `iTextSurface.h`,
   as every surface uses it
   ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).

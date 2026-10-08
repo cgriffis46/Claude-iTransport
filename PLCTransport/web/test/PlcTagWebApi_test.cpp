@@ -3,7 +3,7 @@
 // every type. Also checks that a slow client doesn't hold the registry's
 // lock while its response is written.
 //
-//   g++ -std=c++14 -Wall -Wextra -pthread -I../inc -Iinc -I<iNetTransport>/http/inc
+//   g++ -std=c++14 -Wall -Wextra -pthread -I../inc -Iinc -I<iNetTransport>/http/inc -I<iNetTransport>/inc
 //       test/PlcTagWebApi_test.cpp src/*.cpp <iNetTransport>/http/src/*.cpp -o PlcTagWebApi_test
 #include <atomic>
 #include <chrono>

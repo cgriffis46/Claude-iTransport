@@ -5,7 +5,7 @@
 // tls/'s tests check against Python's). Then many threads at once, for
 // TSan.
 //
-//   g++ -std=c++14 -Wall -Wextra -pthread -Iinc test/WebAuth_test.cpp src/*.cpp -o WebAuth_test
+//   g++ -std=c++14 -Wall -Wextra -pthread -Iinc -I../inc test/WebAuth_test.cpp src/*.cpp -o WebAuth_test
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>

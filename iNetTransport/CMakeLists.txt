@@ -15,6 +15,9 @@
 #                            reads lwIP's netif for it
 #   tls/                     HTTPS on mbedTLS (with MBEDTLS_DIR), PBKDF2
 #                            passwords for http/'s WebAuth logins
+#   storage/                 SPI NOR flash, LittleFS on it (LITTLEFS_DIR), and
+#                            FatFs (an SD card): the web server's files,
+#                            served and uploaded
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
@@ -41,6 +44,9 @@
 #
 # MBEDTLS_DIR: an mbedTLS 3.6 source tree. Builds tls/ (HTTPS), and with
 # host tests on, Tls_test.
+#
+# LITTLEFS_DIR, FATFS_DIR: LittleFS and FatFs source trees; see
+# storage/CMakeLists.txt.
 #
 # LWIP_DIR: an lwIP source tree (2.1 or later). With host tests on, lwIP
 # is built for the PC from it (its Unix port, loopback only) and
@@ -114,6 +120,7 @@ add_subdirectory(http)
 add_subdirectory(w5500)
 add_subdirectory(espat)
 add_subdirectory(sockets)
+add_subdirectory(storage)
 
 # HTTPS (tls/), when mbedTLS's source is given.
 set(MBEDTLS_DIR "" CACHE PATH "An mbedTLS 3.6 source tree, for HTTPS (tls/)")
@@ -191,6 +198,19 @@ if(SENSOR_FW_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/tls/test)
         target_link_libraries(Tls_test PRIVATE inet_tls inet_sockets inet_mqtt inet_http Threads::Threads)
         add_test(NAME Tls_test COMMAND Tls_test WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tls)
+    endif()
+
+    # The UI changed without new firmware: uploads over HTTPS into LittleFS
+    # on a simulated SPI flash, served back. Needs MBEDTLS_DIR and LITTLEFS_DIR.
+    if(UNIX AND NOT INET_SOCKETS_LWIP AND TARGET inet_tls AND TARGET inet_littlefs)
+        add_executable(StorageWeb_test storage/test/StorageWeb_test.cpp ${XNET_SOURCES})
+        target_include_directories(StorageWeb_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
+            ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
+            ${CMAKE_CURRENT_SOURCE_DIR}/tls/test)
+        target_link_libraries(StorageWeb_test PRIVATE inet_tls inet_littlefs inet_sockets inet_mqtt inet_http Threads::Threads)
+        add_test(NAME StorageWeb_test COMMAND StorageWeb_test)
     endif()
 
     # The same over lwIP itself, built here for the PC.

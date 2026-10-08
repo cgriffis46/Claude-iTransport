@@ -364,7 +364,7 @@ from an `HttpFileSource`, so the UI can change without reflashing:
 ```cpp
 static HttpStdioFiles disk("0:/www");        // FILE*: Linux, or newlib reaching FatFs
 static HttpMemoryFiles builtIn(files, n);   // arrays in flash: a fixed UI, or the fallback
-static HttpStaticFiles site(disk, &builtIn);
+static HttpStaticFiles site(disk, &builtIn); // up to three sources, tried in order
 web.get("/api/tags", ...);                   // API routes first
 web.get("/*", HttpStaticFiles::handler, &site);
 ```
@@ -378,11 +378,114 @@ web.get("/*", HttpStaticFiles::handler, &site);
 - A file missing from the first source comes from the fallback (the
   built-in page), so a blank card still gives a working UI.
 - Paths with a `..` segment or a backslash get 404. Nothing outside the
-  folder is reachable, encoded or not.
-- On an STM32, `HttpStdioFiles` needs newlib's `_open`/`_read`/`_lseek`
-  wired to a file system (FatFs on an SD card, LittleFS on SPI flash).
-  Alternatively, write an `HttpFileSource` straight on that file system:
-  three methods (open, read at an offset, close).
+  folder is reachable, encoded or not. Neither are hidden files (any
+  part of the path starting with `.`), which is where uploads in
+  progress are kept.
+- On an STM32, use `storage/` below: `HttpLittleFsFiles` (SPI flash) or
+  `HttpFatFsFiles` (an SD card) are sources written straight on the file
+  system. `HttpStdioFiles` also works if newlib's `_open`/`_read`/`_lseek`
+  are wired to one.
+
+### Storage: SPI flash and SD cards
+
+`storage/` keeps the UI's files where they can be replaced from a
+browser: LittleFS on a SPI NOR flash chip, or FatFs on an SD card. Both
+serve files (`HttpFileSource`) and take uploads (`HttpFileStore`), and
+`HttpFileAdmin` puts the uploads behind an admin login.
+
+```cpp
+// SPI flash (W25Q, MX25L, IS25LP, SST26...) on an iBlockTransport,
+// e.g. Stm32HalSpiBlockTransport with the chip's own CS pin.
+static SpiNorFlash::Config f;           // yield: osDelay(1) or taskYIELD; now: a ms clock
+static SpiNorFlash flash(spiBlock, f);
+static TlsFreeRtosLock fsLock;          // any iLock
+static LittleFsNor::Config l;
+l.lock = &fsLock;
+l.firstSector = 256;                    // keep the first 1 MB for something else
+static LittleFsNor fs(flash, l);
+flash.begin();  fs.mount();             // a blank chip is formatted
+static HttpLittleFsFiles files(fs, "/www");
+
+// or an SD card: CubeMX's FATFS middleware (FF_USE_LFN 2 or 3), mounted
+// with f_mount(&sd, "0:", 1) as usual.
+static HttpFatFsFiles files("0:/www", &fsLock);
+
+static HttpMemoryFiles builtIn(firmwareFiles, n);   // with httpFileAdminPage in it
+static HttpStaticFiles site(files, &builtIn);       // the storage first, then the firmware's
+HttpFileAdmin::Config a;
+a.auth = &auth;                                     // WebAuth, see "HTTPS and logins"
+a.sleep = [](uint32_t ms, void*) { osDelay(ms); };  // lets a commit wait for its readers
+static HttpFileAdmin admin(files, a);
+admin.attach(web);                                  // before the "/*" route
+web.get("/*", HttpStaticFiles::handler, &site);
+```
+
+- **Uploads.** `/files.html` (`httpFileAdminPage`, in the firmware) logs
+  in, lists the files with the space left, uploads and deletes. A file
+  goes up in pieces of `pieceBytes` (1 KB), so each request fits the
+  server's `requestBytes`: `PUT /api/files/<path>?offset=N`, then
+  `POST /api/files/<path>?size=N`. The pieces go into a hidden
+  `.name.part` beside the file, and the commit puts it in place, so the
+  old file is served until the new one is complete. Every call needs an
+  admin session (`Config::role`), changes need the CSRF token, and each
+  upload, commit and delete goes to `Config::audit`. Files are limited to
+  `maxFileBytes` (512 KB).
+- **Replacing a file someone is downloading.** A file open for reading
+  keeps its blocks only while it has a name, so neither file system may
+  replace or delete it under a reader. LittleFS's allocator doesn't
+  protect files that are only being read, and FatFs with `FF_FS_LOCK 0`
+  doesn't either. A test with slow readers got garbage in 29 of 43 reads
+  before this was fixed. So `commit()` and `remove()` refuse a file that
+  is open (`busy()`). `HttpFileAdmin` then holds it closed to new readers
+  (they get the next source's copy, such as the built-in page), waits for
+  the readers it has, and commits, all within `busyWaitMs` (5 s), given
+  `Config::sleep`. Without that, or when time runs out, it answers 503
+  with `Retry-After: 1` and the page tries again for 30 s.
+- **Built in first.** With the firmware's files as the second source, a
+  blank chip or card still serves the built-in UI and `/files.html`.
+  Upload an `index.html` and it takes over; delete it and the built-in
+  one is back.
+- **Power loss.** LittleFS is copy-on-write: replacing a file is atomic.
+  The test cuts the power at every write of an update, and the old or
+  the new file survives whole each time. FatFs can't rename over a file,
+  so its commit deletes the old file first. A power cut in between
+  leaves only the `.part`, and the built-in page is served until the
+  upload is repeated.
+- **Threads.** Everything goes through one `iLock` (`TlsFreeRtosLock` is
+  one, and `WebAuth::Lock` and `MbedTlsServer::Lock` are now the same
+  type). `HttpLittleFsFiles` and `HttpFatFsFiles` keep 4 files open for
+  reading (`kMaxOpen`), one per client thread, and one for an upload. A
+  fifth reader gets the next source's copy, or 404.
+- **SpiNorFlash** reads the JEDEC ID and works out the size, using 4-byte
+  addresses above 16 MB (MX25L256, W25Q256). It clears block protection
+  at `begin()`, or for SST26 sends its global unlock. A chip whose status
+  register is locked reports `WriteProtected`. Waits for the chip yield
+  through `Config::yield`, with a timeout. It is blocking, not a state
+  machine: a file system wants a read finished before it carries on.
+  Run it on the web server's threads, not an ISR.
+- **FatFs settings.** `FF_USE_LFN` 2 or 3 (long names; 1 shares one
+  static buffer between threads). `FF_FS_REENTRANT` can stay 0 when only
+  these classes use the card, since the iLock serialises them; set it to
+  1 if other code uses FatFs too. `FF_FS_LOCK` can be 0, because the class
+  tracks its own open files. Without long names only 8.3 names work, and the build
+  warns. `FF_FS_TINY` 0: each open file holds its own 512-byte buffer.
+- **Wiring.** The flash chip can share the W5500's SPI bus with its own
+  CS. Hold `/WP` and `/HOLD` high (or use quad-capable parts in single-SPI
+  mode). On an F207, an SD card works best on SDIO with CubeMX's
+  `sd_diskio.c`. On an L432, use SPI with a `user_diskio.c`.
+- **Size** (Cortex-M3, `-Os`). Flash: LittleFS 18.6 KB, FatFs 11 KB with
+  long names, `SpiNorFlash` 1.1 KB, each file class 1.7 KB,
+  `HttpFileAdmin` 1.9 KB plus its page 5.9 KB. RAM: `LittleFsNor` 0.8 KB,
+  `HttpLittleFsFiles` 1.8 KB, `HttpFatFsFiles` 3.2 KB, plus FatFs's
+  `FATFS` 0.6 KB.
+- **Build.** `-DLITTLEFS_DIR=<littlefs v2.9>` builds `inet_littlefs`
+  (LittleFS with `LFS_NO_MALLOC`). FatFs comes with the CubeMX project:
+  add `storage/src/HttpFatFsFiles.cpp` to it. `-DFATFS_DIR` only builds
+  the host test.
+- **A browser opens more than one connection.** Chromium keeps two open
+  to one server, so give `xHttpServer` `maxClients` of at least 2 (3 with
+  anything else on it). Connections beyond that are refused while the
+  others stay open.
 
 ## HTTPS and logins
 
@@ -600,8 +703,37 @@ cmake --build build && ctest --test-dir build
   a closed connection freeing its slot, idle and request timeouts, a
   thread that can't be created (503), and `stop()` ending every thread.
 - `HttpFiles_test`: files from memory and from a real folder through
-  `FILE*`: index.html, types, gzip, a fallback, HEAD, a 70 KB file, a file
-  changed while serving, and every way of trying to leave the folder.
+  `FILE*`: index.html, types, gzip, a fallback, three sources, HEAD, a
+  70 KB file, a file changed while serving, hidden files, and every way
+  of trying to leave the folder.
+- `HttpFileAdmin_test`: uploads in pieces of raw bytes, commit, list and
+  delete through the real connection and `WebAuth`. It covers who may
+  (no login, an operator, no CSRF token, a foreign Origin), wrong offsets
+  and sizes, `maxFileBytes`, a full store, every kind of bad path, a file
+  being read (503, or a wait with the file held), JSON escaping of
+  names, the audit log, and the page.
+- `SpiNorFlash_test` (with `-DLITTLEFS_DIR`): the driver against a
+  simulated chip (`test/sim/SimSpiNor.h`): W25Q, MX25L256 with 4-byte
+  addresses, SST26, protection, no chip, a stuck bus and a chip that
+  stays busy. Then LittleFS on it: a 50 KB upload in pieces, listing,
+  space, serving, a remount, a power cut at every write of a file
+  update (the old or new file, never corrupt), readers with an uploader
+  on several threads, and slow readers of a file replaced 60 times (each
+  read one version, whole; every commit gets through).
+- `HttpFatFs_test` (with `-DFATFS_DIR`): FatFs R0.15 with long names on
+  a RAM disk. It covers uploads into new folders, commit, gzip serving,
+  hidden files, listing and space, `kMaxOpen`, a card pulled out and put
+  back, readers with an uploader on several threads, and a file replaced
+  under slow readers.
+- `StorageWeb_test` (with `-DMBEDTLS_DIR -DLITTLEFS_DIR`): the whole
+  path over HTTPS with curl. The built-in page is served from an empty
+  flash; an operator is refused; an admin uploads 20 KB in pieces and
+  commits; a slow download during the next commit gets the old page
+  whole; it is served and survives a remount; a delete brings the
+  built-in page back. `StorageWeb_test --serve 120` stays up for
+  `storage/test/files_ui_test.cjs`, which drives `/files.html` in
+  headless Chromium (Playwright): login, uploads with odd names and
+  folders, delete, a `..` refused, dark mode.
 - `SocketNetDevice_test`: the stack on the operating system's sockets,
   over real TCP on the loopback, driven by curl. It covers pages from a
   folder, gzip, HEAD, POST, keep-alive, three slow requests in parallel

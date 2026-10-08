@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "HttpConnection.h"
+#include "iLock.h"
 
 // Roles, lowest first: each can do what those below it can.
 enum class WebRole : uint8_t { None = 0, Viewer = 1, Operator = 2, Admin = 3 };
@@ -55,12 +56,7 @@ public:
     static constexpr size_t  kMaxName = 31;
     static constexpr size_t  kMaxPassword = 127;
 
-    class Lock {
-    public:
-        virtual ~Lock() = default;
-        virtual void lock() = 0;
-        virtual void unlock() = 0;
-    };
+    typedef iLock Lock;
     typedef bool (*RandomFn)(uint8_t* out, size_t len, void* ctx);          // cryptographic quality
     typedef uint32_t (*ClockFn)(void* ctx);                                 // a ms counter
     typedef bool (*VerifyFn)(const WebUser& user, const char* password, void* ctx);   // tls/WebPassword: PBKDF2

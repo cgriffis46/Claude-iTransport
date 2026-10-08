@@ -108,13 +108,26 @@ const char* HttpStaticFiles::contentType(const char* path) {
 
 bool HttpStaticFiles::safePath(const char* path) {
     if (path == nullptr || path[0] != '/' || std::strchr(path, '\\') != nullptr) return false;
-    // No ".." segment anywhere: nothing outside the root.
-    for (const char* p = path; (p = std::strstr(p, "..")) != nullptr; p += 2) {
-        const bool startsSegment = p[-1] == '/';
-        const bool endsSegment = p[2] == '/' || p[2] == 0;
-        if (startsSegment && endsSegment) return false;
+    // No part may start with '.': not "..", which would leave the root,
+    // nor a hidden file such as an upload in progress.
+    for (const char* p = path; (p = std::strchr(p, '/')) != nullptr; ++p) {
+        if (p[1] == '.') return false;
     }
     return true;
+}
+
+uint32_t HttpFileStore::pathHash(const char* path) {
+    uint32_t h = 2166136261u;
+    for (const char* p = path; *p; ++p) h = (h ^ static_cast<uint8_t>(*p)) * 16777619u;
+    return h ? h : 1;
+}
+
+bool HttpFileStore::uploadPath(const char* path, char* out, size_t cap) {
+    const char* slash = std::strrchr(path, '/');
+    if (slash == nullptr) return false;
+    const size_t dir = static_cast<size_t>(slash - path) + 1;   // with its '/'
+    const int n = std::snprintf(out, cap, "%.*s.%s.part", static_cast<int>(dir), path, slash + 1);
+    return n > 0 && static_cast<size_t>(n) < cap;
 }
 
 void HttpStaticFiles::handler(const HttpRequest& req, HttpResponse& res, void* self) {
@@ -132,12 +145,13 @@ void HttpStaticFiles::handler(const HttpRequest& req, HttpResponse& res, void* s
 }
 
 bool HttpStaticFiles::serve(const HttpRequest& req, HttpResponse& res, const char* path) const {
-    HttpFileSource* sources[2] = {&source_, fallback_};
+    HttpFileSource* const* sources = sources_;
     const bool gzipOk = acceptsGzip(req.header("Accept-Encoding"));
     char gz[kMaxPath + 16];
     std::snprintf(gz, sizeof gz, "%s.gz", path);
 
-    for (HttpFileSource* src : sources) {
+    for (int i = 0; i < 3; ++i) {
+        HttpFileSource* src = sources[i];
         if (src == nullptr) continue;
         size_t size = 0;
         bool gzipped = false;

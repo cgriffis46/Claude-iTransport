@@ -1,6 +1,7 @@
 #pragma once
-// FreeRTOS glue for MbedTlsServer and WebAuth: a mutex for each, and
-// mbedTLS's heap on the FreeRTOS heap.
+// FreeRTOS glue for MbedTlsServer and WebAuth: a mutex for each (an
+// iLock, so the file systems in storage/ take it too), and mbedTLS's heap
+// on the FreeRTOS heap.
 //
 //     tlsUseFreeRtosHeap();                 // once, before anything else of mbedTLS
 //     static TlsFreeRtosLock tlsLock, authLock;
@@ -12,7 +13,7 @@
 #include "MbedTlsServer.h"
 #include "WebAuth.h"
 
-class TlsFreeRtosLock : public MbedTlsServer::Lock, public WebAuth::Lock {
+class TlsFreeRtosLock : public iLock {
 public:
     TlsFreeRtosLock() : m_(xSemaphoreCreateMutex()) {}
     ~TlsFreeRtosLock() override { if (m_) vSemaphoreDelete(m_); }

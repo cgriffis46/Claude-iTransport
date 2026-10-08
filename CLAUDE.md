@@ -11,7 +11,8 @@ iTransport/itransport/   transports: the seam between "how we talk to a chip"
 isensor/                 sensor base classes and one folder per sensor driver
 iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
                          lwIP or OS sockets, DHCP, DNS, SNTP), MQTT and HTTP
-                         clients, a web server that serves files
+                         clients, a web server that serves files, and
+                         storage/ for them (SPI flash + LittleFS, FatFs)
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server,
                          the tags as JSON for the web server (writes over
                          HTTPS with logins)
@@ -140,6 +141,19 @@ older style) and `SensorStateMachine`.
 - `Tls_test` needs curl and openssl; `PlcWebSecure_test --serve 120` plus
   `NODE_PATH=$(npm root -g) node PLCTransport/web/test/ui_test.cjs` drives
   the built-in page in headless Chromium.
+- The UI's files: `storage/` has `SpiNorFlash` (blocking, on an
+  `iBlockTransport`), `LittleFsNor` (LittleFS v2.9, `-DLITTLEFS_DIR`,
+  `LFS_NO_MALLOC`), and `HttpLittleFsFiles`/`HttpFatFsFiles` (FatFs comes
+  from the CubeMX project; `-DFATFS_DIR` only builds the host test,
+  `git clone https://github.com/STMicroelectronics/stm32_mw_fatfs`).
+  `http/HttpFileAdmin` uploads in 1 KB pieces into a hidden `.part`,
+  then commits. A file open for reading is never replaced or removed:
+  stores report `busy()`, and `hold()` keeps new readers out while
+  HttpFileAdmin waits (`Config::sleep`). Neither file system protects a
+  file that is only being read. One lock interface, `inc/iLock.h`, which
+  `WebAuth::Lock` and `MbedTlsServer::Lock` now alias.
+  `StorageWeb_test --serve 120` plus `storage/test/files_ui_test.cjs`
+  drives `/files.html` in Chromium.
 
 ## How a sensor driver is written
 
@@ -198,7 +212,8 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 19 tests (its 13 drivers plus itransport's
-tests), iTransport 6, iNetTransport 23 (with LWIP_DIR and MBEDTLS_DIR),
+tests), iTransport 6, iNetTransport 27 (with LWIP_DIR, MBEDTLS_DIR,
+LITTLEFS_DIR and FATFS_DIR),
 PLCTransport 3 (with MBEDTLS_DIR),
 iDisplay 9 (ssd1306_test,
 hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
@@ -322,13 +337,21 @@ STM32L432KC (L4).
 21. HTTPS and logins on the F207: `MbedTlsServer` behind `iTls.h`,
     `WebAuth` (sessions, roles, CSRF, lockout), PBKDF2 passwords, and
     allow-listed PLC tag writes with an audit log.
+22. The UI on SPI flash (LittleFS) or an SD card (FatFs), uploaded from
+    `/files.html` by an admin: `storage/`, `HttpFileStore`,
+    `HttpFileAdmin`, `iLock`.
 
 ## Open items
 
 - Web security: not built yet are a captive portal (Wi-Fi setup on an
-  ESP), users changed at run time (they're compiled in), and file
-  sources on an SD card (FatFs) and SPI flash (LittleFS). HTTPS has not
+  ESP) and users changed at run time (they're compiled in). HTTPS has not
   run on an F207: the handshake time there is an estimate.
+- Storage: `SpiNorFlash` and LittleFS have run only against
+  `SimSpiNor`, and FatFs only on a RAM disk. No real chip, card, SDIO or
+  CubeMX FATFS project yet. `SpiNorFlash` uses single SPI at 4 KB erase
+  granularity (no QSPI or memory mapping). FatFs's commit isn't atomic
+  (it deletes, then renames). A constantly-read file can make a commit
+  wait up to `busyWaitMs`.
 - `SocketNetDevice` has not run on an F207 or an ESP32: compiled for
   Cortex-M3 against lwIP 2.2.1 with CubeMX-like options, and run over lwIP
   on a PC. No Xtensa toolchain was used for the ESP32.

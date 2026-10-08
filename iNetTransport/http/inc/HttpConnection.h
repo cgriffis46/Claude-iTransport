@@ -46,6 +46,7 @@ public:
                    uint16_t maxRequests = 100);
 
     void reset();                     // a new connection
+    void setSecure(bool tls) { secure_ = tls; }   // the connection is over TLS
     void onToken(const HttpToken& t);
     // The request in progress didn't complete in time: 408, and done.
     void timeout();
@@ -81,5 +82,6 @@ private:
     bool     done_ = false;
     bool     inName_ = false;        // a header name is being appended
     bool     keepAlive_ = true;
+    bool     secure_ = false;
     uint32_t requests_ = 0, errors_ = 0;
 };

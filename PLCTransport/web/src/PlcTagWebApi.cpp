@@ -1,7 +1,11 @@
 #include "PlcTagWebApi.h"
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
+#include "HttpJson.h"
 
 namespace {
 
@@ -148,7 +152,9 @@ bool PlcTagWebApi::writeTag(HttpResponse& res, const PlcTagSnapshot& t) {
 }
 
 void PlcTagWebApi::list(const HttpRequest& req, HttpResponse& res, void* self) {
-    PlcTagRegistry& reg = static_cast<PlcTagWebApi*>(self)->registry_;
+    PlcTagWebApi& api = *static_cast<PlcTagWebApi*>(self);
+    if (!api.mayRead(req, res)) return;
+    PlcTagRegistry& reg = api.registry_;
     char names[kMaxNames];
     const bool some = req.param("names", names, sizeof names);
     if (!some && hasKey(req.query(), "names")) {
@@ -171,7 +177,7 @@ void PlcTagWebApi::list(const HttpRequest& req, HttpResponse& res, void* self) {
                 if (!first) res.print(",");
                 first = false;
                 if (reg.snapshot(name, batch[0])) {
-                    writeTag(res, batch[0]);
+                    api.writeTagJson(res, batch[0]);
                 } else {
                     res.print("{\"name\":");
                     writeString(res, name);
@@ -186,7 +192,7 @@ void PlcTagWebApi::list(const HttpRequest& req, HttpResponse& res, void* self) {
             for (size_t i = 0; i < n; ++i) {
                 if (!first) res.print(",");
                 first = false;
-                if (!writeTag(res, batch[i])) return;   // the client went: the connection closes
+                if (!api.writeTagJson(res, batch[i])) return;   // the client went: the connection closes
             }
             if (n < kBatch) break;
             at += n;
@@ -197,12 +203,161 @@ void PlcTagWebApi::list(const HttpRequest& req, HttpResponse& res, void* self) {
 }
 
 void PlcTagWebApi::one(const HttpRequest& req, HttpResponse& res, void* self) {
-    PlcTagRegistry& reg = static_cast<PlcTagWebApi*>(self)->registry_;
+    PlcTagWebApi& api = *static_cast<PlcTagWebApi*>(self);
+    if (!api.mayRead(req, res)) return;
+    PlcTagRegistry& reg = api.registry_;
     const char* name = req.path() + std::strlen("/api/tags/");
     PlcTagSnapshot t;
     if (*name == 0 || !reg.snapshot(name, t)) return notFound(res, name);
     res.header("Cache-Control", "no-store");
     res.begin("application/json");
-    writeTag(res, t);
+    api.writeTagJson(res, t);
+    res.end();
+}
+
+// ---- with logins: reading by role, and writing ----
+
+bool PlcTagWebApi::mayRead(const HttpRequest& req, HttpResponse& res) {
+    if (cfg_.auth == nullptr || cfg_.readRole == WebRole::None) return true;
+    return cfg_.auth->require(req, res, cfg_.readRole, false);
+}
+
+const PlcWebWritable* PlcTagWebApi::writableEntry(const char* name) const {
+    for (size_t i = 0; i < cfg_.writableCount; ++i) {
+        if (std::strcmp(cfg_.writable[i].name, name) == 0) return &cfg_.writable[i];
+    }
+    return nullptr;
+}
+
+bool PlcTagWebApi::writeTagJson(HttpResponse& res, const PlcTagSnapshot& t) const {
+    const PlcWebWritable* w = cfg_.auth ? writableEntry(t.name) : nullptr;
+    if (w == nullptr || !t.writable || t.dataType == PlcDataType::Struct) return writeTag(res, t);
+    // As writeTag(), with the web's permission and limits.
+    char value[2 * PlcTagSnapshot::kMaxValue + 4];
+    formatValue(t, value, sizeof value);
+    bool ok = res.print("{\"name\":") && writeString(res, t.name) && res.print(",\"type\":\"") &&
+              res.print(typeName(t.dataType)) && res.print("\",\"value\":") && res.print(value) &&
+              res.print(",\"writable\":true,\"webWritable\":true");
+    if (t.dataType != PlcDataType::Bool) {
+        char limits[64];
+        std::snprintf(limits, sizeof limits, ",\"min\":%.17g,\"max\":%.17g", w->min, w->max);
+        ok = ok && res.print(limits);
+    }
+    return ok && res.print("}");
+}
+
+bool PlcTagWebApi::parseValue(PlcDataType t, const char* text, size_t len, uint8_t out[8], double& asDouble) {
+    char buf[40];
+    if (len == 0 || len >= sizeof buf) return false;
+    std::memcpy(buf, text, len);
+    buf[len] = 0;
+    if (t == PlcDataType::Bool) {
+        const bool v = std::strcmp(buf, "true") == 0 || std::strcmp(buf, "1") == 0;
+        if (!v && std::strcmp(buf, "false") != 0 && std::strcmp(buf, "0") != 0) return false;
+        out[0] = v ? 1 : 0;
+        asDouble = v ? 1 : 0;
+        return true;
+    }
+    char* end = nullptr;
+    errno = 0;
+    if (t == PlcDataType::Real || t == PlcDataType::Lreal) {
+        const double d = std::strtod(buf, &end);
+        if (end == buf || *end != 0 || errno == ERANGE || !std::isfinite(d)) return false;
+        if (t == PlcDataType::Real) {
+            if (std::fabs(d) > std::numeric_limits<float>::max()) return false;
+            const float f = static_cast<float>(d);
+            std::memcpy(out, &f, sizeof f);
+        } else {
+            std::memcpy(out, &d, sizeof d);
+        }
+        asDouble = d;
+        return true;
+    }
+    // Integers: exactly, all 64 bits, no fraction, no exponent.
+    const bool isUnsigned = t == PlcDataType::Usint || t == PlcDataType::Uint || t == PlcDataType::Udint ||
+                            t == PlcDataType::Ulint;
+    if (isUnsigned) {
+        if (buf[0] == '-') return false;
+        const unsigned long long v = std::strtoull(buf, &end, 10);
+        if (end == buf || *end != 0 || errno == ERANGE) return false;
+        const unsigned long long max = t == PlcDataType::Usint ? 0xFFull : t == PlcDataType::Uint ? 0xFFFFull
+                                     : t == PlcDataType::Udint ? 0xFFFFFFFFull : ~0ull;
+        if (v > max) return false;
+        const uint64_t u = v;
+        const size_t n = t == PlcDataType::Usint ? 1 : t == PlcDataType::Uint ? 2 : t == PlcDataType::Udint ? 4 : 8;
+        std::memcpy(out, &u, n);   // little-endian, as on the MCU
+        asDouble = static_cast<double>(v);
+        return true;
+    }
+    if (t == PlcDataType::Sint || t == PlcDataType::Int || t == PlcDataType::Dint || t == PlcDataType::Lint) {
+        const long long v = std::strtoll(buf, &end, 10);
+        if (end == buf || *end != 0 || errno == ERANGE) return false;
+        const long long lo = t == PlcDataType::Sint ? -128 : t == PlcDataType::Int ? -32768
+                           : t == PlcDataType::Dint ? -2147483648LL : std::numeric_limits<long long>::min();
+        const long long hi = t == PlcDataType::Sint ? 127 : t == PlcDataType::Int ? 32767
+                           : t == PlcDataType::Dint ? 2147483647LL : std::numeric_limits<long long>::max();
+        if (v < lo || v > hi) return false;
+        const int64_t s = v;
+        const size_t n = t == PlcDataType::Sint ? 1 : t == PlcDataType::Int ? 2 : t == PlcDataType::Dint ? 4 : 8;
+        std::memcpy(out, &s, n);
+        asDouble = static_cast<double>(v);
+        return true;
+    }
+    return false;   // STRUCT: not from the web
+}
+
+namespace {
+void writeError(HttpResponse& res, uint16_t status, const char* message) {
+    char body[96];
+    std::snprintf(body, sizeof body, "{\"error\":\"%s\"}", message);
+    res.status(status).header("Cache-Control", "no-store");
+    res.send("application/json", body);
+}
+}  // namespace
+
+void PlcTagWebApi::write(const HttpRequest& req, HttpResponse& res, void* self) {
+    PlcTagWebApi& api = *static_cast<PlcTagWebApi*>(self);
+    WebAuth::Identity who;
+    if (api.cfg_.auth == nullptr || !api.cfg_.auth->require(req, res, api.cfg_.writeRole, true, &who)) return;
+
+    const char* name = req.path() + std::strlen("/api/tags/");
+    PlcTagSnapshot before;
+    if (*name == 0 || !api.registry_.snapshot(name, before)) return writeError(res, 404, "no such tag");
+    const PlcWebWritable* w = api.writableEntry(name);
+    if (w == nullptr) return writeError(res, 403, "not writable from the web");
+    if (!before.writable || before.dataType == PlcDataType::Struct) return writeError(res, 403, "tag is read-only");
+
+    // The value: {"value":...} or value=...
+    const char* text = nullptr;
+    size_t len = 0;
+    char form[40];
+    const char* type = req.header("Content-Type");
+    if (type && std::strncmp(type, "application/json", 16) == 0) {
+        if (!HttpJson::raw(reinterpret_cast<const char*>(req.body()), req.bodyLength(), "value", text, len)) {
+            return writeError(res, 400, "a value is needed");
+        }
+    } else if (req.param("value", form, sizeof form)) {
+        text = form;
+        len = std::strlen(form);
+    } else {
+        return writeError(res, 400, "a value is needed");
+    }
+
+    uint8_t bytes[8];
+    double asDouble = 0;
+    if (!parseValue(before.dataType, text, len, bytes, asDouble)) {
+        return writeError(res, 422, "not a value of the tag's type, or out of its range");
+    }
+    if (before.dataType != PlcDataType::Bool && (asDouble < w->min || asDouble > w->max)) {
+        return writeError(res, 422, "outside the allowed range");
+    }
+    if (!api.registry_.writeTag(name, bytes, before.sizeBytes)) return writeError(res, 409, "the write failed");
+
+    PlcTagSnapshot after;
+    api.registry_.snapshot(name, after);
+    if (api.cfg_.audit) api.cfg_.audit(who.user, before, after, api.cfg_.auditCtx);
+    res.header("Cache-Control", "no-store");
+    res.begin("application/json");
+    api.writeTagJson(res, after);
     res.end();
 }

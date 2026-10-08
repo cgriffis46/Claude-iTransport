@@ -13,6 +13,8 @@
 #   sockets/                 SocketNetDevice: an iNetDevice on BSD sockets,
 #                            lwIP's (STM32F207, ESP32) or the OS's; hw/lwip
 #                            reads lwIP's netif for it
+#   tls/                     HTTPS on mbedTLS (with MBEDTLS_DIR), PBKDF2
+#                            passwords for http/'s WebAuth logins
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
@@ -36,6 +38,9 @@
 # STM32L4) and the folder holding FreeRTOSConfig.h (Core/Inc), and
 # xnet is built too. The other options are itransport's, and sockets/'s
 # (INET_SOCKETS_LWIP, LWIP_INCLUDE_DIRS).
+#
+# MBEDTLS_DIR: an mbedTLS 3.6 source tree. Builds tls/ (HTTPS), and with
+# host tests on, Tls_test.
 #
 # LWIP_DIR: an lwIP source tree (2.1 or later). With host tests on, lwIP
 # is built for the PC from it (its Unix port, loopback only) and
@@ -110,6 +115,12 @@ add_subdirectory(w5500)
 add_subdirectory(espat)
 add_subdirectory(sockets)
 
+# HTTPS (tls/), when mbedTLS's source is given.
+set(MBEDTLS_DIR "" CACHE PATH "An mbedTLS 3.6 source tree, for HTTPS (tls/)")
+if(NOT MBEDTLS_DIR STREQUAL "")
+    add_subdirectory(tls)
+endif()
+
 # --- Host test -------------------------------------------------------------
 # The real xnet sources on real threads, against test/stub (FreeRTOS
 # simulated with std::thread) and the simulated W5500 in test/sim.
@@ -169,6 +180,17 @@ if(SENSOR_FW_BUILD_TESTS)
         )
         target_link_libraries(SocketNetDevice_test PRIVATE inet_sockets inet_mqtt inet_http Threads::Threads)
         add_test(NAME SocketNetDevice_test COMMAND SocketNetDevice_test)
+    endif()
+
+    # HTTPS with logins, over the host's sockets, checked with curl and openssl.
+    if(UNIX AND NOT INET_SOCKETS_LWIP AND TARGET inet_tls)
+        add_executable(Tls_test tls/test/Tls_test.cpp ${XNET_SOURCES})
+        target_include_directories(Tls_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+            ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
+            ${CMAKE_CURRENT_SOURCE_DIR}/tls/test)
+        target_link_libraries(Tls_test PRIVATE inet_tls inet_sockets inet_mqtt inet_http Threads::Threads)
+        add_test(NAME Tls_test COMMAND Tls_test WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tls)
     endif()
 
     # The same over lwIP itself, built here for the PC.

@@ -8,6 +8,7 @@
 #include "task.h"
 #include "HttpConnection.h"
 #include "HttpLexer.h"
+#include "iTls.h"
 #include "xClient.h"
 #include "xNetInterface.h"
 
@@ -31,6 +32,12 @@
 // each request, and calls its handler on that thread. Handlers may
 // block: other clients have their own threads.
 //
+// HTTPS: give Config::tls a TLS server (tls/MbedTlsServer) and the port
+// 443. Each client thread then does the TLS handshake before anything
+// else, and requests know they came over TLS (HttpRequest::secure()),
+// which WebAuth needs before it takes a password. A second, plain
+// server on port 80 can send browsers on (HttpsRedirect).
+//
 // Up to Config::maxClients at once, each holding one of the
 // interface's sockets. Their buffers are allocated once, in begin(); only
 // the threads' stacks come and go. A W5500 socket listens for one
@@ -49,6 +56,7 @@ public:
         uint32_t    idleTimeoutMs = 5000;    // a kept connection with no new request
         uint32_t    requestTimeoutMs = 10000;   // from a request's first byte to its last
         uint16_t    maxRequestsPerConnection = 100;
+        iTlsServer* tls = nullptr;           // HTTPS; at most as many clients as it has sessions
     };
 
     struct Stats {
@@ -56,7 +64,8 @@ public:
         uint32_t requests;       // answered
         uint32_t errors;         // of those, answered with an error by the server itself
         uint32_t timeouts;       // connections closed for idling or a slow request
-        uint32_t spawnFailures;  // no thread could be created (answered 503)
+        uint32_t spawnFailures;  // no thread could be created (answered 503, or closed under TLS)
+        uint32_t tlsFailures;    // TLS handshakes that failed, or no TLS session free
         uint8_t  active;         // client threads now
     };
 
@@ -89,7 +98,7 @@ public:
 private:
     // One client: its socket, its token queue, its state machines. The
     // daemon fills a free one in and hands it to a new thread.
-    struct Client : HttpOutput, HttpTokenSink {
+    struct Client : HttpOutput, HttpTokenSink, TlsIo {
         xHttpServer*   server = nullptr;
         xClient        sock;
         QueueHandle_t  tokens = nullptr;
@@ -97,13 +106,16 @@ private:
         HttpLexer      lexer;
         HttpConnection conn;
         uint8_t        readBuf[256];
+        iTlsSession*   tls = nullptr;        // while an HTTPS connection is open
         std::atomic<bool> busy{false};
 
         Client(xHttpServer& s, xNetInterface& net, uint8_t* a, size_t size, uint16_t maxRequests)
             : server(&s), sock(net), arena(a), conn(s.routes_, a, size, *this, maxRequests) {}
 
-        bool write(const void* data, size_t len) override;   // HttpOutput: to the socket
+        bool write(const void* data, size_t len) override;   // HttpOutput: to the socket, or through TLS
         bool put(const HttpToken& t) override;               // HttpTokenSink: onto the queue
+        int32_t recv(uint8_t* buf, size_t len, uint32_t timeoutMs) override;        // TlsIo: the socket
+        int32_t send(const uint8_t* buf, size_t len, uint32_t timeoutMs) override;
         void serve();
         void drain();
     };
@@ -119,6 +131,7 @@ private:
     SemaphoreHandle_t slots_ = nullptr;  // counts free clients
     std::atomic<bool> stopping_{false};
 
-    std::atomic<uint32_t> stAccepted_{0}, stRequests_{0}, stErrors_{0}, stTimeouts_{0}, stSpawnFailures_{0};
+    std::atomic<uint32_t> stAccepted_{0}, stRequests_{0}, stErrors_{0}, stTimeouts_{0}, stSpawnFailures_{0},
+                          stTlsFailures_{0};
     std::atomic<uint8_t>  active_{0};
 };

@@ -119,6 +119,7 @@ bool HttpConnection::endString(uint16_t codeIfFull) {
 void HttpConnection::beginRequest() {
     used_ = 0;
     req_ = HttpRequest();
+    req_.secure_ = secure_;
     keepAlive_ = true;
 }
 

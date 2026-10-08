@@ -43,6 +43,7 @@ xHttpServer::Stats xHttpServer::stats() const {
     s.errors = stErrors_.load();
     s.timeouts = stTimeouts_.load();
     s.spawnFailures = stSpawnFailures_.load();
+    s.tlsFailures = stTlsFailures_.load();
     s.active = active_.load();
     return s;
 }
@@ -106,6 +107,7 @@ void xHttpServer::run() {
 }
 
 void xHttpServer::refuse(Client& c, uint16_t code) {
+    if (cfg_.tls) return;   // a 503 would need a TLS handshake first: just close
     HttpResponse res(c);
     res.reset(true, false, false);
     res.sendStatus(code);
@@ -125,6 +127,7 @@ void xHttpServer::clientThread(void* arg) {
 }
 
 bool xHttpServer::Client::write(const void* data, size_t len) {
+    if (tls) return len == 0 || tls->write(static_cast<const uint8_t*>(data), len, 5000) == static_cast<int32_t>(len);
     const uint8_t* p = static_cast<const uint8_t*>(data);
     while (len) {
         const int32_t w = sock.write(p, len, 5000);
@@ -133,6 +136,14 @@ bool xHttpServer::Client::write(const void* data, size_t len) {
         len -= static_cast<size_t>(w);
     }
     return true;
+}
+
+int32_t xHttpServer::Client::recv(uint8_t* buf, size_t len, uint32_t timeoutMs) {
+    return sock.read(buf, len, timeoutMs);
+}
+
+int32_t xHttpServer::Client::send(const uint8_t* buf, size_t len, uint32_t timeoutMs) {
+    return sock.write(buf, len, timeoutMs);
 }
 
 bool xHttpServer::Client::put(const HttpToken& t) {
@@ -154,6 +165,19 @@ void xHttpServer::Client::serve() {
     lexer.reset();
     conn.reset();
     xQueueReset(tokens);
+    if (cfg.tls) {
+        // HTTPS: the handshake first. Its ECC is the slow part (most of a
+        // second on a Cortex-M3), done once per browser thanks to tickets.
+        tls = cfg.tls->acquire();
+        if (tls == nullptr || !tls->handshake(*this, cfg.requestTimeoutMs)) {
+            server->stTlsFailures_.fetch_add(1);
+            if (tls) cfg.tls->release(tls);
+            tls = nullptr;
+            sock.stop(1000);
+            return;
+        }
+    }
+    conn.setSecure(tls != nullptr);
     bool inRequest = false;
     TickType_t since = xTaskGetTickCount();   // start of the request, or of the idle wait
 
@@ -175,13 +199,18 @@ void xHttpServer::Client::serve() {
         TickType_t wait = limit - elapsed;
         if (wait > xNetInterface::toTicks(500)) wait = xNetInterface::toTicks(500);   // to see stop()
 
-        const int32_t n = sock.read(readBuf, sizeof readBuf, wait * portTICK_PERIOD_MS);
+        const uint32_t waitMs = wait * portTICK_PERIOD_MS;
+        const int32_t n = tls ? tls->read(readBuf, sizeof readBuf, waitMs) : sock.read(readBuf, sizeof readBuf, waitMs);
         if (n < 0) break;   // the client closed
         size_t used = 0;
         while ((used < static_cast<size_t>(n) || lexer.pending()) && !conn.done()) {
             used += lexer.feed(readBuf + used, static_cast<size_t>(n) - used, *this);
             drain();
         }
+    }
+    if (tls) {
+        cfg.tls->release(tls);   // close_notify, and its buffers back to the heap
+        tls = nullptr;
     }
     sock.flush(1000);
     sock.stop(1000);

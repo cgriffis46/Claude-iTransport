@@ -51,6 +51,7 @@ pull request, newest first.
   - Compiled for Cortex-M3 against the F2 HAL, FreeRTOS and lwIP headers:
     HTTPS with PBKDF2 is about 74 KB of flash. A connection took 24 KB of
     heap at its peak on a PC. Not run on an F207.
+  ([#17](https://github.com/cgriffis46/Claude-iTransport/pull/17))
 - The web server and clients on lwIP: `iNetTransport/sockets/`.
   - `SocketNetDevice`, an `iEthernetDevice` on a BSD socket API: lwIP's
     (`INET_SOCKETS_LWIP`; an STM32F207 with its own MAC, or an ESP32), or
@@ -287,6 +288,7 @@ pull request, newest first.
   handshake first. `Stats::tlsFailures` counts failed handshakes, and
   `HttpRequest::secure()` says a request came over TLS
   (`HttpConnection::setSecure()`).
+  ([#17](https://github.com/cgriffis46/Claude-iTransport/pull/17))
 - `PlcTagRegistry::snapshot()`: copies tags out under the lock (by page or
   by name, without making a `std::string`), for code that mustn't hold the
   lock while it works.

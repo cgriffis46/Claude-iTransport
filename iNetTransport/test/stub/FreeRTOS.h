@@ -3,7 +3,7 @@
 // threads (std::thread), with one mutex and condition variable behind
 // every object, so a test can have a user thread genuinely asleep in
 // client.read() while the driver thread runs. A tick is 1 ms of real
-// time. task.h, queue.h, stream_buffer.h and event_groups.h all just
+// time. task.h, queue.h, stream_buffer.h, event_groups.h and semphr.h all just
 // include this file.
 #pragma once
 #include <cassert>
@@ -138,4 +138,23 @@ inline EventBits_t xEventGroupWaitBits(EventGroupHandle_t h, EventBits_t want, B
     const EventBits_t got = h->bits;
     if (ok && clear) h->bits &= ~want;
     return got;
+}
+
+// ---- mutexes (semphr.h) ----
+struct SimMutex { bool held; };
+typedef SimMutex* SemaphoreHandle_t;
+
+inline SemaphoreHandle_t xSemaphoreCreateMutex() { return new SimMutex{false}; }
+inline void vSemaphoreDelete(SemaphoreHandle_t h) { delete h; }
+inline BaseType_t xSemaphoreTake(SemaphoreHandle_t h, TickType_t ticks) {
+    std::unique_lock<std::mutex> l(simrtos::mu());
+    if (!simrtos::waitFor(l, ticks, [&] { return !h->held; })) return pdFAIL;
+    h->held = true;
+    return pdPASS;
+}
+inline BaseType_t xSemaphoreGive(SemaphoreHandle_t h) {
+    std::lock_guard<std::mutex> l(simrtos::mu());
+    h->held = false;
+    simrtos::cv().notify_all();
+    return pdPASS;
 }

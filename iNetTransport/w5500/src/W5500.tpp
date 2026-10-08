@@ -9,6 +9,7 @@
 #ifndef W5500_TPP_
 #define W5500_TPP_
 
+#include <string.h>
 #include "../inc/W5500.h"
 
 namespace W5500 {
@@ -194,12 +195,9 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		_reconfigure = false;	// what configure() asked for is being done now
 		if (!bufConfigValid()) return fail(nowMs);
 		_dhcpOn = _cfg.dhcp;
-		if (_dhcpOn && (!_param.dhcp || _param.rxBufKb[w5500_dhcp_socket] == 0
-		                || _param.txBufKb[w5500_dhcp_socket] == 0)) {
-			return fail(nowMs);	// DHCP asked for, but no socket kept for it
-		}
+		if (_dhcpOn && !svcUsable()) return fail(nowMs);	// DHCP asked for, but no socket kept for it
 		_dhcp.stop();
-		_dhcpOpen = false;
+		_svcOpen = false;
 		_addrDirty = false;
 		if (_dhcpOn) {
 			_net = NetConfig();	// no address until the server gives one
@@ -419,7 +417,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		return xfer(true, w5500_bsb_sock_reg(_cur), w5500_Sn_TX_WR, _w, 2, St::tx_send, nowMs);
 	}
 	case St::tx_wrote:
-		if (_cur != w5500_dhcp_socket || !_dhcpOn) _stTx.fetch_add(_moved, std::memory_order_relaxed);
+		if (_cur != w5500_service_socket || !_param.serviceSocket) _stTx.fetch_add(_moved, std::memory_order_relaxed);
 		_ptr = static_cast<uint16_t>(_ptr + _moved);
 		_fsr = static_cast<uint16_t>(_fsr - _moved);
 		_txWrote = static_cast<uint16_t>(_txWrote + _moved);
@@ -434,26 +432,27 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		return 0;
 
 	// ---- DHCP on socket 7 ----
-	case St::dhcp_open_port:
+	case St::svc_open_port:
 		putBe16(_w, DhcpClient::kClientPort);
-		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_PORT, _w, 2, St::dhcp_open_cmd, nowMs);
-	case St::dhcp_open_cmd:
-		return command(w5500_dhcp_socket, w5500_CR_OPEN, St::dhcp_open_sr, nowMs);
-	case St::dhcp_open_sr:
-		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_SR, &_svc[1], 1, St::dhcp_open_check, nowMs);
-	case St::dhcp_open_check:
+		return xfer(true, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_PORT, _w, 2, St::svc_open_cmd, nowMs);
+	case St::svc_open_cmd:
+		return command(w5500_service_socket, w5500_CR_OPEN, St::svc_open_sr, nowMs);
+	case St::svc_open_sr:
+		return xfer(false, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_SR, &_svc[1], 1, St::svc_open_check, nowMs);
+	case St::svc_open_check:
 		if (_svc[1] != w5500_SOCK_UDP) return fail(nowMs);
-		_dhcpOpen = true;
-		_dhcp.begin(_cfg.mac, _param.dhcpSeed ^ (nowMs * 2654435761u), nowMs, _prevIp);
+		_svcOpen = true;
+		_rand = _param.seed ^ (nowMs * 2654435761u);
+		if (_dhcpOn) _dhcp.begin(_cfg.mac, nextRand(), nowMs, _prevIp);
 		enter(St::idle, nowMs);
 		return 0;
-	case St::dhcp_rx_again:
-		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RSR, _b, 2, St::dhcp_rx_check, nowMs);
-	case St::dhcp_rx_check: {
+	case St::svc_rx_again:
+		return xfer(false, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_RX_RSR, _b, 2, St::svc_rx_check, nowMs);
+	case St::svc_rx_check: {
 		const uint16_t rsr = be16(_b);
 		if (be16(_a) != rsr) {
 			if (++_tries > 8) return fail(nowMs);
-			return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RSR, _a, 4, St::dhcp_rx_again, nowMs);
+			return xfer(false, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_RX_RSR, _a, 4, St::svc_rx_again, nowMs);
 		}
 		if (rsr < sizeof _udpHdr) {	// nothing (or nothing whole) to read
 			k.rxPending = false;
@@ -464,39 +463,53 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 		_ptr = be16(_a + 2);
 		// Each datagram in a UDP socket's buffer starts with 8 bytes:
 		// source IP, source port, data length.
-		return xfer(false, w5500_bsb_sock_rx(w5500_dhcp_socket), _ptr, _udpHdr, sizeof _udpHdr, St::dhcp_rx_hdr, nowMs);
+		return xfer(false, w5500_bsb_sock_rx(w5500_service_socket), _ptr, _udpHdr, sizeof _udpHdr, St::svc_rx_hdr, nowMs);
 	}
-	case St::dhcp_rx_hdr: {
+	case St::svc_rx_hdr: {
 		uint16_t len = be16(_udpHdr + 6);
 		if (len > _fsr - sizeof _udpHdr) len = static_cast<uint16_t>(_fsr - sizeof _udpHdr);
 		_udpLen = len;
 		_udpRead = len != 0 && len <= w5500_chunk_bytes;
-		if (!_udpRead) {	// too big to be DHCP: skip it
-			enter(St::dhcp_rx_data, nowMs);
+		if (!_udpRead) {	// too big for DHCP, DNS or SNTP: skip it
+			enter(St::svc_rx_data, nowMs);
 			return 0;
 		}
 		_moved = len;
-		return xfer(false, w5500_bsb_sock_rx(w5500_dhcp_socket), static_cast<uint16_t>(_ptr + sizeof _udpHdr),
-		            _chunk, len, St::dhcp_rx_data, nowMs);
+		return xfer(false, w5500_bsb_sock_rx(w5500_service_socket), static_cast<uint16_t>(_ptr + sizeof _udpHdr),
+		            _chunk, len, St::svc_rx_data, nowMs);
 	}
-	case St::dhcp_rx_data:
-		if (_udpRead && be16(_udpHdr + 4) == DhcpClient::kServerPort) {
-			dhcpEvent(_dhcp.receive(_chunk, _udpLen, nowMs).event);
+	case St::svc_rx_data:
+		// Which client a datagram is for: the port it came from.
+		if (_udpRead) {
+			switch (be16(_udpHdr + 4)) {
+			case DhcpClient::kServerPort:
+				if (_dhcpOn) dhcpEvent(_dhcp.receive(_chunk, _udpLen, nowMs).event);
+				break;
+			case DnsClient::kServerPort:	// both lookups; each takes only its own ID
+				dnsEvent(_dns.receive(_chunk, _udpLen, nowMs).event);
+				ntpDnsEvent(_ntpDns.receive(_chunk, _udpLen, nowMs).event, nowMs);
+				break;
+			case SntpClient::kServerPort:
+				sntpEvent(_sntp.receive(_chunk, _udpLen, nowMs).event);
+				break;
+			default:
+				break;
+			}
 		}
 		_ptr = static_cast<uint16_t>(_ptr + sizeof _udpHdr + _udpLen);
 		putBe16(_w, _ptr);
-		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RD, _w, 2, St::dhcp_rx_recv, nowMs);
-	case St::dhcp_rx_recv:
-		return command(w5500_dhcp_socket, w5500_CR_RECV, St::idle, nowMs);	// rxPending stays set until RSR reads 0
-	case St::dhcp_tx_ptr:
-		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_TX_WR, _b, 2, St::dhcp_tx_data, nowMs);
-	case St::dhcp_tx_data:
+		return xfer(true, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_RX_RD, _w, 2, St::svc_rx_recv, nowMs);
+	case St::svc_rx_recv:
+		return command(w5500_service_socket, w5500_CR_RECV, St::idle, nowMs);	// rxPending stays set until RSR reads 0
+	case St::svc_tx_ptr:
+		return xfer(false, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_TX_WR, _b, 2, St::svc_tx_data, nowMs);
+	case St::svc_tx_data:
 		_ptr = be16(_b);
-		return xfer(true, w5500_bsb_sock_tx(w5500_dhcp_socket), _ptr, _chunk, _moved, St::dhcp_tx_wr, nowMs);
-	case St::dhcp_tx_wr:
+		return xfer(true, w5500_bsb_sock_tx(w5500_service_socket), _ptr, _chunk, _moved, St::svc_tx_wr, nowMs);
+	case St::svc_tx_wr:
 		_ptr = static_cast<uint16_t>(_ptr + _moved);
 		putBe16(_w, _ptr);
-		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_TX_WR, _w, 2, St::tx_send, nowMs);	// then SEND, as for TCP
+		return xfer(true, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_TX_WR, _w, 2, St::tx_send, nowMs);	// then SEND, as for TCP
 
 	case St::error:
 		// A transfer given up on may still be in flight; it has to land
@@ -514,6 +527,7 @@ uint32_t w5500<TTransport>::step(uint32_t nowMs) {
 template <typename TTransport>
 uint32_t w5500<TTransport>::schedule(uint32_t nowMs) {
 	if (_reconfigure) {
+		failQueries();
 		dropAll(SocketEvent::Failed, false);
 		_ready = false;
 		if (!_net.ip.isZero()) {
@@ -564,7 +578,7 @@ uint32_t w5500<TTransport>::schedule(uint32_t nowMs) {
 			return command(s, w5500_CR_CLOSE, St::idle, nowMs);
 		}
 		if (k.sendInFlight && after(nowMs, k.sendSince, w5500_send_timeout_ms)) {
-			if (_dhcpOn && s == w5500_dhcp_socket) {	// a lost DHCP packet: DHCP's own retry covers it
+			if (_param.serviceSocket && s == w5500_service_socket) {	// a lost datagram: the client's own retry covers it
 				k.sendInFlight = false;
 				continue;
 			}
@@ -575,9 +589,9 @@ uint32_t w5500<TTransport>::schedule(uint32_t nowMs) {
 		if (after(nowMs, k.lastSvc, _param.busyPollMs)) return service(s, false, nowMs);
 	}
 
-	// 3b. DHCP: the address, the socket, and its packets.
-	if (_addrDirty || _dhcpOn) {
-		const uint32_t w = dhcpStep(nowMs);
+	// 3b. The service socket: the address, DHCP, DNS and SNTP.
+	if (_addrDirty || svcUsable()) {
+		const uint32_t w = serviceStep(nowMs);
 		if (w == 0) return 0;
 	}
 
@@ -650,8 +664,11 @@ uint32_t w5500<TTransport>::idleWait(uint32_t nowMs) const {
 			if (w < wait) wait = w;
 		}
 	}
-	if (_dhcpOpen && !_sock[w5500_dhcp_socket].sendInFlight) {
-		const uint32_t w = _dhcp.nextWakeMs(nowMs);
+	if (_svcOpen && !_sock[w5500_service_socket].sendInFlight) {
+		uint32_t w = _dhcp.nextWakeMs(nowMs);
+		if (_dns.nextWakeMs(nowMs) < w) w = _dns.nextWakeMs(nowMs);
+		if (_ntpDns.nextWakeMs(nowMs) < w) w = _ntpDns.nextWakeMs(nowMs);
+		if (_sntp.nextWakeMs(nowMs) < w) w = _sntp.nextWakeMs(nowMs);
 		if (w < wait) wait = w;
 	}
 	return wait == 0 ? 1 : wait;
@@ -764,8 +781,9 @@ uint32_t w5500<TTransport>::fail(uint32_t nowMs) {
 	dropAll(SocketEvent::Failed, false);
 	_ready = false;
 	_dhcp.stop();
-	_dhcpOpen = false;
+	_svcOpen = false;
 	_addrDirty = false;
+	failQueries();
 	if (!_net.ip.isZero()) {
 		_prevIp = _net.ip;
 		const MacAddress mac = _net.mac;
@@ -834,34 +852,133 @@ void w5500<TTransport>::dhcpEvent(DhcpClient::Event ev) {
 
 // Returns 0 having started something, non-zero if there was nothing.
 template <typename TTransport>
-uint32_t w5500<TTransport>::dhcpStep(uint32_t nowMs) {
+uint32_t w5500<TTransport>::serviceStep(uint32_t nowMs) {
 	if (_addrDirty) {
 		_addrDirty = false;
 		fillAddr();
 		return xfer(true, w5500_bsb_common(), w5500_GAR, _w, 18, St::addr_applied, nowMs);
 	}
-	if (!_dhcpOn) return 1;
-	Sock &k = _sock[w5500_dhcp_socket];
-	_cur = w5500_dhcp_socket;
-	if (!_dhcpOpen) {
+	if (!svcUsable()) {
+		failQueries();	// nothing to ask with
+		return 1;
+	}
+	Sock &k = _sock[w5500_service_socket];
+	_cur = w5500_service_socket;
+	if (!_svcOpen) {
 		k = Sock();
 		_w[0] = w5500_Sn_MR_UDP;
-		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_MR, _w, 1, St::dhcp_open_port, nowMs);
+		return xfer(true, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_MR, _w, 1, St::svc_open_port, nowMs);
 	}
 	if (k.rxPending) {
 		_tries = 0;
-		return xfer(false, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_RX_RSR, _a, 4, St::dhcp_rx_again, nowMs);
+		return xfer(false, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_RX_RSR, _a, 4, St::svc_rx_again, nowMs);
 	}
-	if (k.sendInFlight) return 1;
-	const DhcpClient::Action a = _dhcp.poll(nowMs, _chunk, w5500_chunk_bytes);
-	dhcpEvent(a.event);
-	if (a.len != 0) {
-		_moved = static_cast<uint16_t>(a.len);
-		for (int i = 0; i < 4; ++i) _w[i] = a.dst.b[i];
-		putBe16(_w + 4, DhcpClient::kServerPort);
-		return xfer(true, w5500_bsb_sock_reg(w5500_dhcp_socket), w5500_Sn_DIPR, _w, 6, St::dhcp_tx_ptr, nowMs);
+	if (k.sendInFlight) return 1;	// one datagram at a time
+
+	if (_dhcpOn) {
+		const DhcpClient::Action a = _dhcp.poll(nowMs, _chunk, w5500_chunk_bytes);
+		dhcpEvent(a.event);
+		if (a.len != 0) return sendService(a.dst, DhcpClient::kServerPort, a.len, nowMs);
+	}
+
+	// DNS and SNTP need an address to send from.
+	if (!_net.ip.isZero()) {
+		if (_dnsReq) {
+			_dnsReq = false;
+			if (!_dns.begin(_dnsName, _net.dns, static_cast<uint16_t>(nextRand() >> 16), nowMs) && _host) {
+				_host->resolved(false, IpAddress());	// no DNS server, or a bad name
+			}
+		}
+		if (_ntpReq) {
+			_ntpReq = false;
+			_ntpBusy = true;
+			_sntp.cancel();
+			_ntpDns.cancel();
+			IpAddress ip;
+			if (IpAddress::parse(_ntpServer, ip)) {
+				_sntp.begin(ip, nextRand(), nowMs);
+			} else if (!_ntpDns.begin(_ntpServer, _net.dns, static_cast<uint16_t>(nextRand() >> 16), nowMs)) {
+				_ntpBusy = false;
+				if (_host) _host->timeReceived(false, 0, nowMs);
+			}
+		}
+		DnsClient::Action d = _dns.poll(nowMs, _chunk, w5500_chunk_bytes);
+		dnsEvent(d.event);
+		if (d.len != 0) return sendService(d.dst, DnsClient::kServerPort, d.len, nowMs);
+		d = _ntpDns.poll(nowMs, _chunk, w5500_chunk_bytes);
+		ntpDnsEvent(d.event, nowMs);
+		if (d.len != 0) return sendService(d.dst, DnsClient::kServerPort, d.len, nowMs);
+		const SntpClient::Action t = _sntp.poll(nowMs, _chunk, w5500_chunk_bytes);
+		sntpEvent(t.event);
+		if (t.len != 0) return sendService(t.dst, SntpClient::kServerPort, t.len, nowMs);
 	}
 	return _addrDirty ? 0 : 1;	// a Lost with nothing to send: apply it on the next pass
+}
+
+// _chunk[0..len) to dst:port from the service socket.
+template <typename TTransport>
+uint32_t w5500<TTransport>::sendService(const IpAddress &dst, uint16_t port, size_t len, uint32_t nowMs) {
+	_moved = static_cast<uint16_t>(len);
+	for (int i = 0; i < 4; ++i) _w[i] = dst.b[i];
+	putBe16(_w + 4, port);
+	return xfer(true, w5500_bsb_sock_reg(w5500_service_socket), w5500_Sn_DIPR, _w, 6, St::svc_tx_ptr, nowMs);
+}
+
+template <typename TTransport>
+bool w5500<TTransport>::resolve(const char *name) {
+	if (!_configured || !svcUsable() || name == nullptr || strlen(name) > DnsClient::kMaxName + 1) return false;
+	_dns.cancel();	// a new question replaces the old; its answer never comes
+	strcpy(_dnsName, name);
+	_dnsReq = true;
+	return true;
+}
+
+template <typename TTransport>
+bool w5500<TTransport>::requestTime(const char *server) {
+	if (!_configured || !svcUsable() || server == nullptr || strlen(server) > DnsClient::kMaxName + 1) return false;
+	strcpy(_ntpServer, server);
+	_ntpReq = true;
+	return true;
+}
+
+template <typename TTransport>
+void w5500<TTransport>::dnsEvent(DnsClient::Event ev) {
+	if (ev == DnsClient::Event::None || !_host) return;
+	_host->resolved(ev == DnsClient::Event::Resolved, _dns.address());
+}
+
+// The time server's name is known: ask it for the time.
+template <typename TTransport>
+void w5500<TTransport>::ntpDnsEvent(DnsClient::Event ev, uint32_t nowMs) {
+	if (ev == DnsClient::Event::None) return;
+	if (ev == DnsClient::Event::Resolved && _sntp.begin(_ntpDns.address(), nextRand(), nowMs)) return;
+	_ntpBusy = false;
+	if (_host) _host->timeReceived(false, 0, nowMs);
+}
+
+template <typename TTransport>
+void w5500<TTransport>::sntpEvent(SntpClient::Event ev) {
+	if (ev == SntpClient::Event::None) return;
+	_ntpBusy = false;
+	if (_host) _host->timeReceived(ev == SntpClient::Event::Synced, _sntp.unixMs(), _sntp.atMs());
+}
+
+// The chip is restarting, or can't do UDP: whoever asked a question
+// hears now rather than at their timeout.
+template <typename TTransport>
+void w5500<TTransport>::failQueries() {
+	if (_dnsReq || _dns.busy()) {
+		_dnsReq = false;
+		_dns.cancel();
+		if (_host) _host->resolved(false, IpAddress());
+	}
+	if (_ntpReq || _ntpBusy) {
+		_ntpReq = false;
+		_ntpBusy = false;
+		_ntpDns.cancel();
+		_sntp.cancel();
+		if (_host) _host->timeReceived(false, 0, 0);
+	}
 }
 
 template <typename TTransport>
@@ -872,7 +989,7 @@ void w5500<TTransport>::applyPhy(uint32_t nowMs) {
 	emitDev(up ? DeviceEvent::LinkUp : DeviceEvent::LinkDown);
 	// Plugged back in, perhaps somewhere else: check the lease now
 	// rather than at T1 (or, still looking for one, ask again now).
-	if (up && _dhcpOpen) _dhcp.linkRestored(nowMs);
+	if (up && _svcOpen) _dhcp.linkRestored(nowMs);
 }
 
 template <typename TTransport>

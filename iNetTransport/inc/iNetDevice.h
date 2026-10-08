@@ -76,6 +76,14 @@ public:
     // lease obtained or renewed with a different address, or (ip all
     // zeros) the address lost. Every open socket is lost with it.
     virtual void addressChanged(const NetConfig& cfg) = 0;
+
+    // The answer to iNetDevice::resolve(): ok and the address, or not.
+    virtual void resolved(bool ok, const IpAddress& ip) = 0;
+
+    // The answer to iNetDevice::requestTime(): ok, and the time was
+    // unixMs (UTC, ms since 1970) at atMs on the ms counter poll() is
+    // given — or not.
+    virtual void timeReceived(bool ok, uint64_t unixMs, uint32_t atMs) = 0;
 };
 
 // Implemented by a chip driver.
@@ -118,6 +126,19 @@ public:
     // from the ISR (the host relays it). A driver with no interrupt
     // line leaves this empty and polls.
     virtual void interrupt() = 0;
+
+    // Looks up name's IPv4 address with the interface's DNS server;
+    // the answer comes through iNetDeviceHost::resolved(). The name is
+    // copied. A new call replaces one in progress, whose answer then
+    // never comes. Held until the interface has an address. false: it
+    // can't be asked now (not configured, name too long), and no answer
+    // follows.
+    virtual bool resolve(const char* name) = 0;
+
+    // Asks a time server — a name or "a.b.c.d" — for the time (SNTP);
+    // the answer comes through iNetDeviceHost::timeReceived(). Same
+    // rules as resolve().
+    virtual bool requestTime(const char* server) = 0;
 };
 
 // An Ethernet controller. Adds what only a wired PHY has.

@@ -111,8 +111,10 @@ board it should look roughly like this (your numbers will differ):
 [    0.125] [eth] driver ready in 14 ms
 [    2.130] [eth] address in 2020 ms
 [    2.131] [eth] address 192.168.1.77/24, gateway 192.168.1.1, dns 192.168.1.1 (DHCP)
-[    2.140] [eth] services: echo :7, discard :9, chargen :19
-[   10.140] [stats] up 10 s, heap free 19000 (lowest 18500)
+[    2.160] [eth] DNS: pool.ntp.org is 162.159.200.1 (28 ms)
+[    2.205] [eth] time: 2026-10-08 12:00:02.205 UTC (44 ms)
+[    2.210] [eth] services: echo :7, discard :9, chargen :19, time :37
+[   10.140] [stats] up 10 s, 2026-10-08 12:00:10.140 UTC, heap free 17000 (lowest 16500)
 [   10.142] [stats] eth: link up, 192.168.1.77, spi 2412 xfers, 0 restarts, 3 irqs, rx 0 B, tx 0 B, 0 connections
 ```
 
@@ -132,10 +134,12 @@ The firmware stops at the first step that can't work and says why. In order:
 | `INT ... is low` | INTn not connected (the driver falls back to polling), or the module has no pull-up and the pin has floated |
 | `PHY: no link` | the cable, the switch port, the link LEDs on the jack |
 | `still waiting for a DHCP lease` | no DHCP server on that network: build with `-DETH_DHCP=OFF` and set the address in `config.h` |
+| `DNS: no answer for pool.ntp.org` | the DNS server shown (from DHCP, or `NetConfig::dns` with a static address), or no route to the internet |
+| `time: no answer from the NTP server` | UDP 123 blocked on the way out, or the NTP server DHCP named isn't answering. The board carries on without the time, and retries every minute |
 | `[wifi] the module never answered "AT"` | TX/RX swapped, baud rate (ESP-AT v2 defaults to 115200), EN not high, or the supply sagging (use a separate regulator) |
 | `[wifi] join failed` | the SSID or passphrase, the band (ESP modules are 2.4 GHz only), or range |
 | `*** PANIC: stack overflow in task 'x'` | raise that thread's `stack_size` in `bringup.cpp` / `services.cpp` |
-| `*** PANIC: FreeRTOS heap exhausted` | raise `configTOTAL_HEAP_SIZE` in `FreeRTOSConfig.h` (about 13 KB of RAM is free) |
+| `*** PANIC: FreeRTOS heap exhausted` | raise `configTOTAL_HEAP_SIZE` in `FreeRTOSConfig.h` (about 10 KB of RAM is free with both interfaces built in) |
 | `*** PANIC: HardFault at pc=...` | `arm-none-eabi-addr2line -e build/inet_bringup.elf <pc>` gives the line; report it |
 
 Once it's running, the `[stats]` line every 10 s is the health check:
@@ -165,9 +169,11 @@ It runs these tests, and exits 0 only if all of them pass:
 - 1 MB upload (discard)
 - 1 MB download (chargen), with every byte checked against the pattern
 - all three at once
+- the board's clock against the PC's, which should be within 2 s
+  (`--time-tolerance`) if both keep NTP time
 
 Worth recording: the SPI speed the probe chose, the throughput and latency
-numbers, and the `[stats]` line after the test. For a sense of scale:
+numbers, the clock difference, and the `[stats]` line after the test. For a sense of scale:
 - 20 MHz SPI carries at most 2.5 MB/s before protocol overhead.
 - ESP-AT at 115200 baud carries at most about 11 KB/s each way.
 

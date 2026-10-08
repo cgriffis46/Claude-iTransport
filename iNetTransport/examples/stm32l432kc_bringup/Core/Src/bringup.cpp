@@ -9,6 +9,7 @@
  *           then the driver, DHCP, and the services.
  *   ESP-AT: the driver's own start-up (reset pin, AT, AT+GMR), joining
  *           the network, then the echo service.
+ *   Both:   a DNS lookup and the time (SNTP), once there is an address.
  */
 
 #include <stdio.h>
@@ -44,6 +45,47 @@ void logAddress(const char *tag, const NetConfig &a) {
 	char ip[16], gw[16], dns[16];
 	log_printf("[%s] address %s/%u, gateway %s, dns %s (%s)", tag, ipStr(a.ip, ip), prefixLen(a.subnet),
 	           ipStr(a.gateway, gw), ipStr(a.dns, dns), a.dhcp ? "DHCP" : "static");
+}
+
+// Unix ms as "YYYY-MM-DD hh:mm:ss.mmm UTC" (civil from days, H. Hinnant).
+const char *utcStr(uint64_t unixMs, char *buf, size_t n) {
+	const int64_t days = static_cast<int64_t>(unixMs / 86400000u);
+	const uint32_t msOfDay = static_cast<uint32_t>(unixMs % 86400000u);
+	const int64_t z = days + 719468;
+	const int64_t era = z / 146097;
+	const unsigned doe = static_cast<unsigned>(z - era * 146097);
+	const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	const unsigned mp = (5 * doy + 2) / 153;
+	const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+	const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+	const long y = static_cast<long>(yoe) + static_cast<long>(era) * 400 + (m <= 2);
+	snprintf(buf, n, "%04ld-%02u-%02u %02lu:%02lu:%02lu.%03lu UTC", y, m, d,
+	         static_cast<unsigned long>(msOfDay / 3600000), static_cast<unsigned long>(msOfDay / 60000 % 60),
+	         static_cast<unsigned long>(msOfDay / 1000 % 60), static_cast<unsigned long>(msOfDay % 1000));
+	return buf;
+}
+
+// The interface's DNS and time, each with what to check if it fails.
+void checkDnsAndTime(xNetInterface &net, const char *tag) {
+	IpAddress ip;
+	char a[16], when[40];
+	uint32_t t0 = osKernelGetTickCount();
+	if (net.resolve("pool.ntp.org", ip, 12000)) {
+		log_printf("[%s] DNS: pool.ntp.org is %s (%lu ms)", tag, ip.format(a),
+		           static_cast<unsigned long>(osKernelGetTickCount() - t0));
+	} else {
+		log_printf("[%s] DNS: no answer for pool.ntp.org from %s. Is the DNS server right (DHCP, or NetConfig::dns)?",
+		           tag, net.address().dns.format(a));
+	}
+	t0 = osKernelGetTickCount();
+	if (net.syncTime(20000)) {
+		log_printf("[%s] time: %s (%lu ms)", tag, utcStr(net.unixTimeMs(), when, sizeof when),
+		           static_cast<unsigned long>(osKernelGetTickCount() - t0));
+	} else {
+		log_printf("[%s] time: no answer from the NTP server%s. UDP 123 blocked? Carrying on without the time.", tag,
+		           net.address().ntp.isZero() ? " (pool.ntp.org)" : " (from DHCP)");
+	}
 }
 
 void netThread(void *arg) {
@@ -160,14 +202,14 @@ void ethStart() {
 	const uint32_t uid = HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2();
 	static W5500::w5500_param_t param = [uid] {
 		W5500::w5500_param_t p;
-		for (int i = 0; i < 8; ++i) p.rxBufKb[i] = p.txBufKb[i] = (i < 4 || i == W5500::w5500_dhcp_socket) ? 2 : 0;
+		for (int i = 0; i < 8; ++i) p.rxBufKb[i] = p.txBufKb[i] = (i < 5 || i == W5500::w5500_service_socket) ? 2 : 0;
 		p.pollMs = 100;			// INT is wired: polling is a backstop
-		p.dhcpSeed = uid;
+		p.seed = uid;
 		return p;
 	}();
 	static Chip chip(param, &hspi1, W5500_CS_GPIO_Port, W5500_CS_Pin, spiMutex);
 	xNetInterface::Config cfg;
-	cfg.maxSockets = 4;			// echo, discard, chargen, and one spare
+	cfg.maxSockets = 5;			// echo, discard, chargen, time, and one spare
 	static xEthernet eth(chip, cfg);
 	g_chip = &chip;
 
@@ -203,14 +245,16 @@ void ethStart() {
 		log_printf("[eth] address in %lu ms", static_cast<unsigned long>(osKernelGetTickCount() - t0));
 		logAddress("eth", eth.address());
 	}
+	if (eth.hasAddress()) checkDnsAndTime(eth, "eth");
 	services_start(eth, "eth", g_ethStats, SERVICE_ALL);
-	log_printf("[eth] services: echo :7, discard :9, chargen :19");
+	log_printf("[eth] services: echo :7, discard :9, chargen :19, time :37");
 }
 #endif
 
 #if BRINGUP_WIFI
 typedef ESPAT::espat<Stm32HalUartTransport> Esp;
 Esp *g_esp = nullptr;
+xWifi *g_wifi = nullptr;
 ServiceStats g_wifiStats = {};
 
 void wifiStart() {
@@ -224,6 +268,7 @@ void wifiStart() {
 	cfg.maxSockets = 2;			// echo and one spare
 	static xWifi wifi(esp, cfg);
 	g_esp = &esp;
+	g_wifi = &wifi;
 
 	NetConfig net;
 	net.dhcp = true;
@@ -256,13 +301,23 @@ void wifiStart() {
 		log_printf("[wifi] joined in %lu ms", static_cast<unsigned long>(osKernelGetTickCount() - t0));
 		logAddress("wifi", wifi.address());
 	}
+	checkDnsAndTime(wifi, "wifi");
 	services_start(wifi, "wifi", g_wifiStats, SERVICE_ECHO);
 	log_printf("[wifi] services: echo :7");
 }
 #endif
 
 void statsLine(uint32_t upMs) {
-	log_printf("[stats] up %lu s, heap free %u (lowest %u)", static_cast<unsigned long>(upMs / 1000),
+	uint64_t now = 0;
+#if BRINGUP_ETH
+	if (g_eth) now = g_eth->unixTimeMs();
+#endif
+#if BRINGUP_WIFI
+	if (now == 0 && g_wifi) now = g_wifi->unixTimeMs();
+#endif
+	char when[40];
+	log_printf("[stats] up %lu s, %s, heap free %u (lowest %u)", static_cast<unsigned long>(upMs / 1000),
+	           now ? utcStr(now, when, sizeof when) : "time not set",
 	           static_cast<unsigned>(xPortGetFreeHeapSize()), static_cast<unsigned>(xPortGetMinimumEverFreeHeapSize()));
 #if BRINGUP_ETH
 	if (g_chip && g_eth) {

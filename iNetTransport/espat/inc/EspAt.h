@@ -35,6 +35,11 @@
  *  are understood. Listening: the module has one server port, so every
  *  xClient that listens must use the same port.
  *
+ *  DNS and time are the module's own: AT+CIPDOMAIN, and AT+CIPSNTPCFG
+ *  then AT+CIPSNTPTIME? until the module has synchronised. The module
+ *  reports time to the second, so time from it is good to about half a
+ *  second.
+ *
  *  Throughput is the UART's: about 11 KB/s each way at 115200 baud.
  *  Raise the baud rate with AT+UART_DEF once, by hand, if you need more.
  */
@@ -68,6 +73,9 @@ const uint8_t  espat_probe_tries		= 10;
 const uint32_t espat_busy_retry_ms		= 100;		// after "busy p..."
 const uint8_t  espat_busy_tries			= 50;
 const uint32_t espat_error_backoff_ms	= 1000;
+const uint32_t espat_dns_timeout_ms		= 15000;	// AT+CIPDOMAIN: the module asks its DNS server
+const uint32_t espat_sntp_wait_ms		= 15000;	// for the module's first SNTP sync
+const uint32_t espat_sntp_poll_ms		= 1000;		// AT+CIPSNTPTIME? while waiting
 
 typedef struct espat_param_t {
 	// Drives the module's EN (or RST) pin: true holds it in reset.
@@ -120,6 +128,8 @@ public:
 	bool listen(uint8_t s, uint16_t port) override;
 	void close(uint8_t s) override;
 	void interrupt() override {}
+	bool resolve(const char *name) override;
+	bool requestTime(const char *server) override;
 
 	// iWifiDevice
 	void join(const char *ssid, const char *passphrase) override;
@@ -150,7 +160,8 @@ public:
 private:
 	enum class Cmd : uint8_t {
 		None, Probe, Rst, Init, Join, Leave, QueryIp, QueryDns, QueryAp,
-		Start, Server, ServerTimeout, Close, RecvData, Send
+		Start, Server, ServerTimeout, Close, RecvData, Send,
+		Domain, SntpCfg, SntpTime
 	};
 	enum class Res : uint8_t { Pending, Ok, Error, SendOk, Prompt, Busy, Timeout };
 
@@ -182,6 +193,7 @@ private:
 	uint32_t fail(uint32_t nowMs);
 	void     linkLost();
 	void     closeSock(uint8_t s, SocketEvent ev);
+	void     failQueries();
 	void     incoming(uint8_t link);
 	void     linkClosed(uint8_t link);
 	int8_t   freeLink() const;
@@ -225,6 +237,22 @@ private:
 	int8_t   _rssi = 0;
 	char     _ssid[33] = {0};
 	char     _pass[65] = {0};
+
+	// DNS and time.
+	bool     _dnsReq = false;
+	bool     _dnsBusy = false;
+	uint32_t _dnsGen = 0;				// resolve() calls; an answer counts only for the latest
+	uint32_t _dnsCmdGen = 0;
+	IpAddress _dnsResult;
+	char     _dnsName[256] = {0};
+	bool     _ntpReq = false;
+	bool     _ntpBusy = false;
+	bool     _ntpPolling = false;
+	uint32_t _ntpPollStart = 0;
+	uint32_t _ntpLastPoll = 0;
+	uint64_t _ntpSec = 0;				// from +CIPSNTPTIME
+	char     _ntpServer[256] = {0};
+	char     _ntpConfigured[256] = {0};	// what AT+CIPSNTPCFG last set
 
 	// Server.
 	bool     _serverOn = false;

@@ -6,6 +6,7 @@
 #include "queue.h"
 #include "stream_buffer.h"
 #include "event_groups.h"
+#include "semphr.h"
 #include "NetTypes.h"
 #include "iNetDevice.h"
 
@@ -54,6 +55,14 @@ public:
         size_t  rxBufBytes = 1024;  // per socket, each direction; from the FreeRTOS heap
         size_t  txBufBytes = 1024;
         uint8_t inboxDepth = 8;
+        // Time: the server asked when DHCP names none (option 42); a
+        // name or "a.b.c.d", which must outlive the interface. nullptr:
+        // no time unless DHCP gives a server.
+        const char* ntpServer = "pool.ntp.org";
+        // Re-synchronised this often once there is an address, the
+        // first time at once; a failed attempt is tried again after a
+        // minute. 0: only when syncTime() is called.
+        uint32_t ntpIntervalMs = 3600000;
     };
     static constexpr uint8_t  kMaxSockets = 8;
     static constexpr uint32_t kForever = 0xFFFFFFFFu; // as a timeout: wait as long as it takes
@@ -94,8 +103,28 @@ public:
     bool waitAddress(uint32_t timeoutMs);
 
     // The address in use (all zeros without one) — with DHCP, what the
-    // server handed out, including gateway and DNS.
+    // server handed out, including gateway, DNS and NTP servers.
     NetConfig address() const;
+
+    // Looks up host's IPv4 address with the interface's DNS server,
+    // sleeping up to timeoutMs for the answer. "a.b.c.d" is answered at
+    // once, without asking. false: no such name, no DNS server, no
+    // answer in time. One lookup at a time: concurrent callers queue.
+    bool resolve(const char* host, IpAddress& out, uint32_t timeoutMs);
+
+    // Asks the time server now (see Config::ntpServer), sleeping up to
+    // timeoutMs for the answer. Not needed with Config::ntpIntervalMs,
+    // which keeps the time without being asked.
+    bool syncTime(uint32_t timeoutMs);
+
+    // The time has been received at least once.
+    bool timeValid() const;
+
+    // Unix time in ms (UTC), from the last answer plus the RTOS tick
+    // since; 0 until timeValid(). Keep it re-synchronised (the default
+    // ntpIntervalMs does) — the tick counter wraps after 49 days, and a
+    // crystal drifts a few seconds a day.
+    uint64_t unixTimeMs() const;
 
     uint8_t socketCount() const { return nSockets_; }
 
@@ -103,10 +132,11 @@ protected:
     xNetInterface(iNetDevice& dev, const Config& cfg);
     ~xNetInterface() override;
 
-    enum class Op : uint8_t { Kick, Configure, Connect, Listen, Close, Join, Leave };
+    enum class Op : uint8_t { Kick, Configure, Connect, Listen, Close, Join, Leave, Resolve, SyncTime };
     struct Msg {
         Op        op = Op::Kick;
         uint8_t   sock = 0;
+        uint32_t  id = 0;       // Resolve/SyncTime: whose request
         uint16_t  port = 0;
         uint16_t  localPort = 0;
         IpAddress ip;
@@ -128,6 +158,8 @@ protected:
     static constexpr EventBits_t kIfJoinFailed = 1u << 3;
     static constexpr EventBits_t kIfLinkDown   = 1u << 4; // kIfLink's opposite, to wait on
     static constexpr EventBits_t kIfAddress    = 1u << 5;
+    static constexpr EventBits_t kIfResolved   = 1u << 6; // a resolve() answer is in
+    static constexpr EventBits_t kIfTime       = 1u << 7; // a time answer is in
     EventGroupHandle_t events_ = nullptr;
 
     iNetDevice& dev_;
@@ -171,12 +203,43 @@ private:
     void   socketEvent(uint8_t s, SocketEvent ev) override;
     void   deviceEvent(DeviceEvent ev) override;
     void   addressChanged(const NetConfig& cfg) override;
+    void   resolved(bool ok, const IpAddress& ip) override;
+    void   timeReceived(bool ok, uint64_t unixMs, uint32_t atMs) override;
+
+    void startTimeSync(uint32_t id);   // driver thread
+    bool waitAnswer(EventBits_t bit, const uint32_t& answerId, uint32_t id, uint32_t timeoutMs);
 
     Config        cfg_;
     uint8_t       nSockets_ = 0;
     QueueHandle_t inbox_ = nullptr;
     Slot          slots_[kMaxSockets];
     NetConfig     addr_;                   // written by the driver thread, inside a critical section
+
+    // resolve() and syncTime(): one caller at a time (requestMutex_).
+    // Each request has an id; an answer counts for the caller whose id
+    // the driver thread stamps on it, so an answer that comes after its
+    // caller gave up can't be taken by the next one.
+    SemaphoreHandle_t requestMutex_ = nullptr;
+    uint32_t      requestSeq_ = 0;          // under requestMutex_
+    static constexpr size_t kNameBuffer = 256;   // a DNS name (at most 253) and its NUL
+    char          resolveName_[kNameBuffer] = {0};
+    uint32_t      activeResolveId_ = 0;     // driver thread
+    uint32_t      activeTimeId_ = 0;
+    // Answers: written by the driver thread inside a critical section.
+    uint32_t      resolvedId_ = 0;
+    bool          resolvedOk_ = false;
+    IpAddress     resolvedIp_;
+    uint32_t      timeId_ = 0;
+    bool          timeOk_ = false;
+    bool          timeValid_ = false;
+    uint64_t      syncUnixMs_ = 0;
+    uint32_t      syncAtMs_ = 0;
+    // Automatic re-synchronisation, driver thread only.
+    bool          hasAddr_ = false;
+    bool          syncInFlight_ = false;
+    uint32_t      syncBase_ = 0;
+    uint32_t      syncDelay_ = 0;
+    char          ntpName_[16] = {0};       // DHCP's NTP server, as text
 
     std::atomic<bool> kickPending_{false}; // a Kick is in the inbox, or the driver is about to look anyway
     std::atomic<bool> irqPending_{false};

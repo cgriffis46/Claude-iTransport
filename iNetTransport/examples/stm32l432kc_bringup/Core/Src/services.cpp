@@ -9,7 +9,7 @@
 
 namespace {
 
-enum class Kind : uint8_t { Echo, Discard, Chargen };
+enum class Kind : uint8_t { Echo, Discard, Chargen, Time };
 
 struct Service {
 	xNetInterface *net;
@@ -58,6 +58,21 @@ void serve(void *arg) {
 				moved += n;
 			}
 			break;
+		case Kind::Time: {
+			const uint64_t ms = sv.net->unixTimeMs();
+			if (ms == 0) break;	// not set yet: say nothing
+			const uint32_t sec1900 = static_cast<uint32_t>(ms / 1000 + 2208988800ull);
+			buf[0] = static_cast<uint8_t>(sec1900 >> 24);
+			buf[1] = static_cast<uint8_t>(sec1900 >> 16);
+			buf[2] = static_cast<uint8_t>(sec1900 >> 8);
+			buf[3] = static_cast<uint8_t>(sec1900);
+			if (client.write(buf, 4, 1000) == 4) {
+				moved = 4;
+				sv.stats->bytesOut = sv.stats->bytesOut + 4;
+				client.flush(1000);
+			}
+			break;
+		}
 		case Kind::Chargen:
 			for (uint32_t off = 0;;) {
 				for (int i = 0; i < 256; ++i) buf[i] = chargen_byte(off + i);
@@ -87,14 +102,14 @@ uint8_t chargen_byte(uint32_t offset) {
 }
 
 void services_start(xNetInterface &net, const char *tag, ServiceStats &stats, uint8_t mask) {
-	static Service sv[2][3];	// two interfaces at most
+	static Service sv[2][4];	// two interfaces at most
 	static int used = 0;
 	if (used >= 2) return;
 	Service *s = sv[used++];
-	const Kind kinds[3] = {Kind::Echo, Kind::Discard, Kind::Chargen};
-	const uint16_t ports[3] = {7, 9, 19};
-	const char *names[3] = {"echo", "discard", "chargen"};
-	for (int i = 0; i < 3; ++i) {
+	const Kind kinds[4] = {Kind::Echo, Kind::Discard, Kind::Chargen, Kind::Time};
+	const uint16_t ports[4] = {7, 9, 19, 37};
+	const char *names[4] = {"echo", "discard", "chargen", "time"};
+	for (int i = 0; i < 4; ++i) {
 		if (!(mask & (1u << i))) continue;
 		s[i].net = &net;
 		s[i].tag = tag;

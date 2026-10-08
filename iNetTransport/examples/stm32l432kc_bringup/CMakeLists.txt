@@ -81,7 +81,8 @@ set(INCLUDES
     ${FREERTOS_DIR}/portable/GCC/ARM_CM4F
     ${FREERTOS_RTOS2_DIR}
     ${IT}/inc ${IT}/hw/stm32/inc ${IT}/hw/freertos/inc
-    ${INET}/inc ${INET}/hw/freertos/inc ${INET}/dhcp/inc ${INET}/w5500/inc ${INET}/espat/inc
+    ${INET}/inc ${INET}/hw/freertos/inc ${INET}/dhcp/inc ${INET}/dns/inc ${INET}/sntp/inc
+    ${INET}/w5500/inc ${INET}/espat/inc
 )
 
 set(DEFS STM32L432xx USE_HAL_DRIVER
@@ -116,6 +117,8 @@ add_executable(inet_bringup.elf
     ${INET}/hw/freertos/src/xClient.cpp
     ${INET}/hw/freertos/src/xWifi.cpp
     ${INET}/dhcp/src/DhcpClient.cpp
+    ${INET}/dns/src/DnsClient.cpp
+    ${INET}/sntp/src/SntpClient.cpp
     $<TARGET_OBJECTS:vendor>
 )
 target_include_directories(inet_bringup.elf PRIVATE ${INCLUDES})

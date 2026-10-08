@@ -73,8 +73,8 @@ public:
     State state() const { return state_; }
     bool  bound() const { return state_ == State::Bound || state_ == State::Renewing || state_ == State::Rebinding; }
 
-    // Valid while bound(): ip, subnet, gateway, dns (and the mac given
-    // to begin()).
+    // Valid while bound(): ip, subnet, gateway, dns, ntp (and the mac
+    // given to begin()).
     const NetConfig& lease() const { return lease_; }
     uint32_t leaseSeconds() const { return leaseSec_; }
     const IpAddress& server() const { return server_; }

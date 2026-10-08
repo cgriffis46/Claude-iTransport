@@ -5,6 +5,8 @@
  *   echo     port 7   everything received is sent back      (RFC 862)
  *   discard  port 9   everything received is counted, dropped (RFC 863)
  *   chargen  port 19  sends a known pattern until the peer closes (RFC 864)
+ *   time     port 37  the board's clock: 32-bit seconds since 1900   (RFC 868)
+ *                     (nothing, if the time isn't set yet)
  *
  * Each is one thread serving one connection at a time.
  */
@@ -20,7 +22,7 @@ struct ServiceStats {
 	volatile uint32_t bytesOut;
 };
 
-enum : uint8_t { SERVICE_ECHO = 1, SERVICE_DISCARD = 2, SERVICE_CHARGEN = 4, SERVICE_ALL = 7 };
+enum : uint8_t { SERVICE_ECHO = 1, SERVICE_DISCARD = 2, SERVICE_CHARGEN = 4, SERVICE_TIME = 8, SERVICE_ALL = 15 };
 
 // Starts a thread on net for each service in mask. tag names them in
 // the log. An ESP-AT module listens on one port only: give it

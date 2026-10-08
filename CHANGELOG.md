@@ -10,6 +10,37 @@ pull request, newest first.
 ### 2026-10-08
 
 #### Added
+- The web server and clients on lwIP: `iNetTransport/sockets/`.
+  - `SocketNetDevice`, an `iEthernetDevice` on a BSD socket API: lwIP's
+    (`INET_SOCKETS_LWIP`; an STM32F207 with its own MAC, or an ESP32), or
+    the operating system's. `xEthernet`, `xClient`, `xHttpServer`,
+    `xHttpClient` and `xMqttClient` run on it unchanged. Sockets that
+    listen on one port share one listening socket, so connections wait in
+    its backlog. DNS and SNTP use `DnsClient` and `SntpClient` on a UDP
+    socket of its own. It polls with one zero-timeout `select()`.
+  - `hw/lwip/LwipNetif`: the link and address of an lwIP netif, DHCP
+    included.
+  - `NetSockets.h` undoes lwIP's `LWIP_COMPAT_SOCKETS` macros, which would
+    otherwise rewrite `connect()` and `poll()` (found compiling with
+    CubeMX-like options).
+  - Host tests: `SocketNetDevice_test` (24 checks, real sockets, curl,
+    DNS/SNTP simulated on loopback) and `Lwip_test` (18 checks, lwIP 2.2.1
+    built for the PC, with `-DLWIP_DIR`). Both pass under ASan/UBSan, and
+    `SocketNetDevice_test` also under TSan. Compiled for Cortex-M3 with
+    lwIP's FreeRTOS port. Not run on an F207 or an ESP32.
+- `http/HttpFiles`: the web UI from files instead of the firmware.
+  `HttpStaticFiles` (index.html, types by extension, `.gz` when the
+  browser takes gzip, `no-cache`, a fallback source, `..` refused) over
+  `HttpFileSource`: `HttpStdioFiles` (`FILE*`) and `HttpMemoryFiles`.
+  Host test `HttpFiles_test` (17 checks).
+- `PLCTransport/web/`: the tag database as read-only JSON (`PlcTagWebApi`:
+  `GET /api/tags`, `?names=`, `/api/tags/<name>`; every CIP elementary
+  type, STRUCT as hex) and a built-in page that polls it
+  (`PlcWebDefaultPage`). Values are copied under the registry's lock a few
+  tags at a time and written out after it's released. Host tests
+  `PlcTagWebApi_test` (18 checks) and `PlcWebServer_test` (8 checks, end
+  to end over sockets, with curl and Python's JSON parser). PLCTransport gained
+  `SENSOR_FW_BUILD_TESTS` and a README with the web security plan.
 - HTTP/1.1 client in `iNetTransport/`, for a node sending its data out.
   - `HttpLexer` has a Response mode. It handles status lines, chunked
     bodies (decoded; extensions and trailers skipped), bodies that run to
@@ -206,6 +237,11 @@ pull request, newest first.
   ([#12](https://github.com/cgriffis46/Claude-iTransport/pull/12)).
 
 #### Changed
+- `PlcTagRegistry::snapshot()`: copies tags out under the lock (by page or
+  by name, without making a `std::string`), for code that mustn't hold the
+  lock while it works.
+- `HttpRoutes::on()`, the same as `add()`, so route-adding code takes an
+  `xHttpServer` or an `HttpRoutes`.
 - The STM32L432KC bring-up firmware builds one network interface, the
   W5500 or the ESP module: `BRINGUP_ETH` and `BRINGUP_WIFI` both on (or
   both off) now stops the build. An L432 board has one interface. One

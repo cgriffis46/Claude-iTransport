@@ -1,16 +1,19 @@
 # iNetTransport
 
 Network interfaces on top of itransport: `xEthernet`, `xWifi` and `xClient`
-for FreeRTOS, with two chip drivers underneath. One is the WIZnet W5500
-(Ethernet over SPI). The other is an Espressif module running ESP-AT
-firmware (Wi-Fi over a UART). There are also DHCP, DNS and SNTP clients,
+for FreeRTOS, with three drivers underneath. One is the WIZnet W5500
+(Ethernet over SPI). One is an Espressif module running ESP-AT firmware
+(Wi-Fi over a UART). The third, `SocketNetDevice`, runs on a TCP/IP stack's
+socket API: lwIP's on an MCU with its own Ethernet MAC (the STM32F207) or
+on an ESP32, or the operating system's on Linux. There are also DHCP, DNS and SNTP clients,
 so an interface gets its address, looks up names and keeps the time, and
 an MQTT client (`xMqttClient`), an HTTP client (`xHttpClient`) and a web
 server (`xHttpServer`) that run over either interface.
 Target: STM32L432KC, with one interface (the W5500 or an ESP module, not
 both), most likely as a node that sends its data out: an MQTT or HTTP
 client. The servers (`xHttpServer`) fit it with `maxClients = 1`, but are
-meant for bigger STM32s.
+meant for bigger STM32s, such as the F207 with lwIP, where the same code
+runs on `SocketNetDevice`.
 
 ## Layers
 
@@ -28,18 +31,20 @@ meant for bigger STM32s.
                    |       per-socket stream buffers + event group
  inc/           iNetDevice / iEthernetDevice / iWifiDevice
                    |       the seam: any chip, any bus
- w5500/         w5500<TTransport>        espat/   espat<TTransport>
-                   |   + dhcp/ dns/ sntp/            |   (the module does DHCP,
-                   |     on one UDP socket           |    DNS and SNTP itself)
- itransport     iBlockTransport (SPI, DMA)          iTransport (UART stream)
+ w5500/         w5500<TTransport>        espat/   espat<TTransport>    sockets/  SocketNetDevice
+                   |   + dhcp/ dns/ sntp/            |   (the module does         |  + dns/ sntp/ on a
+                   |     on one UDP socket           |    DHCP, DNS, SNTP)        |    UDP socket
+ itransport     iBlockTransport (SPI, DMA)          iTransport (UART stream)   lwIP sockets (MAC + PHY)
+                                                                               or the OS's
 ```
 
 The bus is the chip driver's business, not the interface's. A chip on SPI
 uses `iBlockTransport` (W5500, ATWINC1500). A module on a UART uses the
 stream `iTransport` (ESP-AT). A PHY on MII/RMII would sit behind the MCU's
-Ethernet MAC and a host stack such as lwIP. All of them implement
-`iNetDevice`, so `xEthernet`, `xWifi` and `xClient` don't change. The
-STM32L432 has no Ethernet MAC, so MII/RMII doesn't apply to this target.
+Ethernet MAC and a host stack such as lwIP: that's `SocketNetDevice`. All
+of them implement `iNetDevice`, so `xEthernet`, `xWifi` and `xClient`, and
+everything on them, don't change. The STM32L432 has no Ethernet MAC, so it
+uses the W5500 or an ESP module; the F207 has one, and uses lwIP.
 
 ## Threads and blocking
 
@@ -131,6 +136,47 @@ returns how long it can be left, so the driver thread stays responsive.
 - Errors: a failed transfer or a chip that doesn't answer reports every
   socket Failed, backs off, and starts again from reset.
 - `W5500Probe.h`: blocking wiring checks for bring-up, run before the driver.
+
+## Socket driver: lwIP, or the operating system
+
+`SocketNetDevice` is an `iEthernetDevice` on a BSD socket API, so a board
+whose TCP/IP stack is lwIP runs the same interfaces, web server and clients
+as one with a W5500:
+
+```cpp
+// STM32F207, CubeMX with LwIP and FreeRTOS: MX_LWIP_Init() has set up the
+// MAC, the PHY and DHCP. Build iNetTransport with INET_SOCKETS_LWIP.
+SocketNetDevice::Config devCfg;
+devCfg.platform = lwipNetifPlatform(&gnetif);   // link and address from lwIP's netif
+static SocketNetDevice dev(devCfg);
+static xEthernet eth(dev);
+eth.begin(net);                                 // net.dns: used if lwIP's DNS has none
+osThreadNew([](void* e) { static_cast<xEthernet*>(e)->run(); }, &eth, &netAttr);
+// From here on, exactly as with the W5500: xClient, xHttpServer, xHttpClient, xMqttClient.
+```
+
+- lwIP owns the interface: MAC, PHY, address, DHCP. The device only reads
+  the link and the address through `Platform` (`hw/lwip/LwipNetif`), and
+  tells the interface when they change. Every socket goes when the
+  address does.
+- Needs `LWIP_SOCKET 1` (so `NO_SYS 0`). Any `LWIP_COMPAT_SOCKETS` works:
+  `NetSockets.h` undoes the compat macros (`connect`, `poll`, `close`,
+  ...) that would otherwise rewrite this project's methods of those names.
+  In your own files, include lwIP's socket header after this project's
+  headers, or set `LWIP_COMPAT_SOCKETS 2`.
+- Non-blocking: `poll()` does one zero-timeout `select()` over every
+  socket. It asks to be called again within 2 ms while a socket is open,
+  and within 50 ms otherwise. Received data waits at most one interval.
+- Several sockets listening on one port share one listening socket.
+  Connections wait in its backlog rather than being refused between
+  accepts, which is better than the W5500 can do.
+- DNS and SNTP use the same `DnsClient` and `SntpClient` as the W5500, on
+  a UDP socket of the device's own, so lwIP's own DNS isn't needed.
+- About 4.7 KB of code and 4 KB of RAM for 8 sockets on a Cortex-M3,
+  plus lwIP itself. lwIP's sockets cost more RAM than the raw API that
+  `CipTagTcpServer` uses; the F207's 128 KB has room for both.
+- On Linux, the same source (without `INET_SOCKETS_LWIP`) runs on the
+  operating system's sockets. That is how the tests drive it with curl.
 
 ## ESP-AT driver
 
@@ -309,6 +355,34 @@ How a request flows:
   connected. On the target the code is about 8 KB (`-Os`, Cortex-M4),
   plus newlib's `vsnprintf` if `printf()` is used. No TLS, no files.
 
+### The web UI from files
+
+The pages don't have to be in the firmware. `HttpStaticFiles` serves them
+from an `HttpFileSource`, so the UI can change without reflashing:
+
+```cpp
+static HttpStdioFiles disk("0:/www");        // FILE*: Linux, or newlib reaching FatFs
+static HttpMemoryFiles builtIn(files, n);   // arrays in flash: a fixed UI, or the fallback
+static HttpStaticFiles site(disk, &builtIn);
+web.get("/api/tags", ...);                   // API routes first
+web.get("/*", HttpStaticFiles::handler, &site);
+```
+
+- `/` and any path ending in `/` serve `index.html`. The type comes from
+  the extension. Files are sent with `Cache-Control: no-cache`, so a
+  changed UI shows on the next load.
+- When the browser takes gzip and `<file>.gz` exists, that is sent
+  (`Content-Encoding: gzip`). A UI can be stored compressed, which is
+  handy on small flash.
+- A file missing from the first source comes from the fallback (the
+  built-in page), so a blank card still gives a working UI.
+- Paths with a `..` segment or a backslash get 404. Nothing outside the
+  folder is reachable, encoded or not.
+- On an STM32, `HttpStdioFiles` needs newlib's `_open`/`_read`/`_lseek`
+  wired to a file system (FatFs on an SD card, LittleFS on SPI flash).
+  Alternatively, write an `HttpFileSource` straight on that file system:
+  three methods (open, read at an offset, close).
+
 ## Using it
 
 Ethernet, from a CubeMX project (complete in
@@ -442,6 +516,21 @@ cmake --build build && ctest --test-dir build
   without holding up a fast one, nothing listening while all are busy),
   a closed connection freeing its slot, idle and request timeouts, a
   thread that can't be created (503), and `stop()` ending every thread.
+- `HttpFiles_test`: files from memory and from a real folder through
+  `FILE*`: index.html, types, gzip, a fallback, HEAD, a 70 KB file, a file
+  changed while serving, and every way of trying to leave the folder.
+- `SocketNetDevice_test`: the stack on the operating system's sockets,
+  over real TCP on the loopback, driven by curl. It covers pages from a
+  folder, gzip, HEAD, POST, keep-alive, three slow requests in parallel
+  with a fourth waiting in the backlog, `xHttpClient` to the same
+  server, 1 MB echoed through `xClient`, refused and closed connections,
+  and DNS and SNTP against the simulated servers on 127.0.0.3:53 and
+  127.0.0.4:123 (skipped without root).
+- `Lwip_test` (with `-DLWIP_DIR=<lwIP source>`): lwIP built for the PC, two
+  interfaces on its loopback netif, everything through lwIP's own TCP and
+  UDP. It covers `xHttpServer` to `xHttpClient` (an 84 KB chunked page,
+  keep-alive, three slow requests at once), 256 KB echoed through
+  `xClient`, DNS and SNTP, and the link going down and up.
 - `xNet_test`: the real FreeRTOS-layer sources on real threads, against a
   FreeRTOS simulation (`test/stub`), with both drivers. It covers blocking
   reads and their timeouts, 20 KB each way, a close waking a sleeping

@@ -17,6 +17,9 @@ public:
     static constexpr uint8_t kMaxRoutes = 16;
 
     bool add(HttpMethod method, const char* path, HttpHandler fn, void* ctx = nullptr);
+    bool on(HttpMethod method, const char* path, HttpHandler fn, void* ctx = nullptr) {   // as xHttpServer's
+        return add(method, path, fn, ctx);
+    }
 
     // The route for this request: 0 found, else 404 or 405 (allow: the
     // methods the path does take, for the Allow header).

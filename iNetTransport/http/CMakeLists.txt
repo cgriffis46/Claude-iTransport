@@ -4,6 +4,7 @@
 # (HttpResponse); hw/freertos/xHttpServer runs it, a thread per client.
 # For a client, HttpClientProtocol has URLs, the request head and
 # HttpResponseReader; hw/freertos/xHttpClient runs it on the caller's thread.
+# HttpFiles serves a web UI from files (a folder via FILE*, or flash).
 #
 # Added by iNetTransport/CMakeLists.txt. Needs nothing else.
 add_library(inet_http STATIC
@@ -13,11 +14,13 @@ add_library(inet_http STATIC
     inc/HttpResponse.h
     inc/HttpConnection.h
     inc/HttpClientProtocol.h
+    inc/HttpFiles.h
     src/HttpLexer.cpp
     src/HttpRequest.cpp
     src/HttpResponse.cpp
     src/HttpConnection.cpp
     src/HttpClientProtocol.cpp
+    src/HttpFiles.cpp
 )
 
 target_include_directories(inet_http PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -31,4 +34,7 @@ if(SENSOR_FW_BUILD_TESTS)
     add_executable(HttpClient_test test/HttpClient_test.cpp)
     target_link_libraries(HttpClient_test PRIVATE inet_http)
     add_test(NAME HttpClient_test COMMAND HttpClient_test)
+    add_executable(HttpFiles_test test/HttpFiles_test.cpp)
+    target_link_libraries(HttpFiles_test PRIVATE inet_http)
+    add_test(NAME HttpFiles_test COMMAND HttpFiles_test)
 endif()

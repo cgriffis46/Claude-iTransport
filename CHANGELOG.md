@@ -24,7 +24,6 @@ pull request, newest first.
   editing, which a character LCD shows with its blinking cursor, as it
   cannot draw inverse
   ([#13](https://github.com/cgriffis46/Claude-iTransport/pull/13)).
-
 - `iDisplay`: long press and auto-repeat buttons. `xButtonConfig` makes a
   button plain, long press (a short press is `Pressed` on release, a long
   one is `Held`, never both) or auto-repeat (`Pressed`, then `Repeat`

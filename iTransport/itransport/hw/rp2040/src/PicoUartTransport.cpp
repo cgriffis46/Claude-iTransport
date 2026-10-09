@@ -4,9 +4,9 @@
 
 namespace {
 
-constexpr unsigned kUarts = 2;
-PicoUartTransport* s_active[kUarts] = {nullptr, nullptr};
-bool s_irqInstalled[kUarts] = {false, false};
+constexpr unsigned kUarts = NUM_UARTS;
+PicoUartTransport* s_active[kUarts] = {};
+bool s_irqInstalled[kUarts] = {};
 
 void irq0() { PicoUartTransport::handleIrq(0); }
 void irq1() { PicoUartTransport::handleIrq(1); }

@@ -25,7 +25,8 @@ set(ITRANSPORT_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 #               I2CTransport directly, not FreeRtosTransport<I2CTransport>; its
 #               busy-wait/delay(1) fallback is what makes that possible.
 #   RP2040   -> PicoI2CTransport, PicoSPITransport, PicoUartTransport, for a
-#               Raspberry Pi Pico, on the Pico SDK. Interrupt and DMA driven,
+#               Raspberry Pi Pico or Pico 2 (RP2040, or RP2350 on its Arm or
+#               RISC-V cores), on the Pico SDK. Interrupt and DMA driven,
 #               no RTOS needed. The including project must have called
 #               pico_sdk_init() first.
 #   HOST     -> no hardware transport at all: only the platform-independent
@@ -393,4 +394,21 @@ if(SENSOR_FW_BUILD_TESTS)
     )
     target_link_libraries(pico_transport_test PRIVATE sensor_transport)
     add_test(NAME pico_transport_test COMMAND pico_transport_test)
+
+    # The same, simulating the RP2350: 16 DMA channels, 4 DMA interrupt
+    # lines and its own interrupt numbers.
+    add_executable(pico_transport_test_rp2350
+        test/rp2040/pico_transport_test.cpp
+        test/rp2040/sim/pico_sim.cpp
+        hw/rp2040/src/PicoI2CTransport.cpp
+        hw/rp2040/src/PicoSPITransport.cpp
+        hw/rp2040/src/PicoUartTransport.cpp
+    )
+    target_compile_definitions(pico_transport_test_rp2350 PRIVATE SIM_RP2350)
+    target_include_directories(pico_transport_test_rp2350 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/rp2040/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/rp2040/inc
+    )
+    target_link_libraries(pico_transport_test_rp2350 PRIVATE sensor_transport)
+    add_test(NAME pico_transport_test_rp2350 COMMAND pico_transport_test_rp2350)
 endif()

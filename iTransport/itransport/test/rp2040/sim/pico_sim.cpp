@@ -19,13 +19,13 @@ namespace sim {
 I2cBlock   i2c[2];
 SpiBlock   spi[2];
 UartBlock  uart[2];
-DmaChannel dma[12];
+DmaChannel dma[NUM_DMA_CHANNELS];
 bool       gpioOut[32];
 int        gpioLevel[32];
-int        dmaChannelsAvailable = 12;
+int        dmaChannelsAvailable = NUM_DMA_CHANNELS;
 unsigned   isrCalls = 0;
-std::vector<irq_handler_t> handlers[32];
-bool       irqEnabled[32];
+std::vector<irq_handler_t> handlers[SIM_NUM_IRQS];
+bool       irqEnabled[SIM_NUM_IRQS];
 
 // ---- I2C ----
 
@@ -120,7 +120,7 @@ void reset() {
     for (int g = 0; g < 32; ++g) { gpioOut[g] = false; gpioLevel[g] = -1; }
     // Interrupt handlers stay installed, as they do on the chip for the
     // life of the program: the transports install theirs once per bus.
-    dmaChannelsAvailable = 12;
+    dmaChannelsAvailable = NUM_DMA_CHANNELS;
     isrCalls = 0;
 }
 
@@ -152,7 +152,7 @@ static void runSpi(unsigned k, DmaChannel& tx, DmaChannel& rx) {
     uint8_t* dst = (uint8_t*)rx.write;
     for (uint32_t i = 0; i < rx.count; ++i) { dst[rx.writeInc ? i : 0] = in.front(); in.pop_front(); }
     tx.busy = rx.busy = false;
-    for (int l = 0; l < 2; ++l) if (rx.irqLine[l]) rx.status[l] = true;
+    for (unsigned l = 0; l < NUM_DMA_IRQS; ++l) if (rx.irqLine[l]) rx.status[l] = true;
 }
 
 static void stepDma() {
@@ -177,7 +177,7 @@ static void stepDma() {
 static bool pending(unsigned irq) {
     if (!irqEnabled[irq]) return false;
     if (irq == I2C0_IRQ || irq == I2C1_IRQ) { const I2cBlock& b = i2c[irq - I2C0_IRQ]; return (b.raw() & b.mask) != 0; }
-    if (irq == DMA_IRQ_0 || irq == DMA_IRQ_1) { for (auto& c : dma) if (c.status[irq - DMA_IRQ_0] && c.irqLine[irq - DMA_IRQ_0]) return true; return false; }
+    if (irq >= DMA_IRQ_0 && irq < DMA_IRQ_0 + NUM_DMA_IRQS) { for (auto& c : dma) if (c.status[irq - DMA_IRQ_0] && c.irqLine[irq - DMA_IRQ_0]) return true; return false; }
     if (irq == UART0_IRQ || irq == UART1_IRQ) { const UartBlock& b = uart[irq - UART0_IRQ]; return b.rxIrq && !b.rx.empty(); }
     return false;
 }
@@ -188,7 +188,7 @@ void step() {
     // As the NVIC would: run a line's handlers while it is still asserted.
     // A line that stays asserted after its handlers ran is a storm; the
     // cap stops the test hanging on one.
-    for (unsigned irq = 0; irq < 32; ++irq) {
+    for (unsigned irq = 0; irq < SIM_NUM_IRQS; ++irq) {
         for (int guard = 0; guard < 4 && pending(irq); ++guard) {
             for (auto h : handlers[irq]) { ++isrCalls; h(); }
         }
@@ -220,7 +220,7 @@ int dma_claim_unused_channel(bool required) {
     int inUse = 0;
     for (auto& c : sim::dma) inUse += c.claimed;
     if (inUse >= sim::dmaChannelsAvailable) return -1;
-    for (int ch = 0; ch < 12; ++ch) if (!sim::dma[ch].claimed) { sim::dma[ch].claimed = true; return ch; }
+    for (unsigned ch = 0; ch < NUM_DMA_CHANNELS; ++ch) if (!sim::dma[ch].claimed) { sim::dma[ch].claimed = true; return ch; }
     return -1;
 }
 void dma_channel_unclaim(uint channel) { sim::dma[channel] = sim::DmaChannel(); }
@@ -233,5 +233,5 @@ void dma_channel_configure(uint channel, const dma_channel_config* config, volat
     if (trigger) c.busy = true;
 }
 void dma_start_channel_mask(uint32_t chan_mask) {
-    for (unsigned ch = 0; ch < 12; ++ch) if (chan_mask & (1u << ch)) sim::dma[ch].busy = true;
+    for (unsigned ch = 0; ch < NUM_DMA_CHANNELS; ++ch) if (chan_mask & (1u << ch)) sim::dma[ch].busy = true;
 }

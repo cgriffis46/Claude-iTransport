@@ -10,23 +10,27 @@ pull request, newest first.
 ### 2026-10-09
 
 #### Added
-- RP2040 (Raspberry Pi Pico) transports in `iTransport/itransport/hw/rp2040/`,
-  on the Pico SDK, non-blocking and with no RTOS needed:
+- Raspberry Pi Pico and Pico 2 transports in `iTransport/itransport/hw/rp2040/`,
+  on the Pico SDK, non-blocking and with no RTOS needed. They run on the
+  RP2040 and on the RP2350 (Arm or RISC-V cores), sizing their tables
+  from the SDK's per-chip counts (16 DMA channels and 4 DMA interrupt
+  lines on the RP2350):
   - `PicoI2CTransport`: an interrupt-driven state machine on the I2C
     controller's FIFOs, for register reads and writes (repeated start)
     and command-style chips, up to the full 33 bytes. A NACK fails the
     transfer; `checkDevice()` probes with a one byte read.
   - `PicoSPITransport`: DMA for both directions, finished by the DMA
-    interrupt, with a GPIO chip-select.
+    interrupt (any of the chip's DMA lines), with a GPIO chip-select.
   - `PicoUartTransport`: the `iTransport` byte stream, received from
     the UART interrupt into the sink and sent by DMA.
   - `PicoSyncTransport<TBus>`: an optional Pico `mutex_t` per bus for
     sharing it between the two cores, tried without waiting.
   - `SENSOR_FW_HARDWARE=RP2040` builds them as `PicoTransportLibrary`
     from a Pico SDK project.
-  - `pico_transport_test`: the transports, unchanged, over a simulation
-    of the RP2040's I2C, SPI, UART and DMA behind stand-in Pico SDK
-    headers.
+  - `pico_transport_test` and `pico_transport_test_rp2350`: the
+    transports, unchanged, over a simulation of the chip's I2C, SPI,
+    UART and DMA behind stand-in Pico SDK headers, once as an RP2040
+    and once as an RP2350.
 
 #### Fixed
 - `isensor` configures for microcontroller targets again: `pbmp280_driver`,

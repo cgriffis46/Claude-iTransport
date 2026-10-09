@@ -23,14 +23,17 @@
 // high once it has landed. The constructor sets the pin up as an
 // output, high.
 //
-// The DMA interrupt (DMA_IRQ_0 by default, or DMA_IRQ_1) is installed
-// as a shared handler by the first transport constructed on it, so it
-// coexists with other DMA users of the same line.
+// The DMA interrupt (DMA_IRQ_0 by default; DMA_IRQ_1, or on the RP2350
+// up to DMA_IRQ_3) is installed as a shared handler by the first
+// transport constructed on it, so it coexists with other DMA users of
+// the same line. Works on the RP2040 (12 DMA channels) and the RP2350
+// (16).
 class PicoSPITransport : public PicoSyncTransport<SPITransport> {
 public:
     // busMutex: a mutex_t shared by every transport on this SPI block,
     // or nullptr when only one core uses it. See PicoSyncTransport.
-    // dmaIrq: 0 or 1, which DMA interrupt line the channels use.
+    // dmaIrq: which DMA interrupt line the channels use: 0 or 1, and on
+    // the RP2350 also 2 or 3. Anything else means 0.
     PicoSPITransport(spi_inst_t* spi, unsigned csPin, mutex_t* busMutex = nullptr, unsigned dmaIrq = 0);
     ~PicoSPITransport() override;
 

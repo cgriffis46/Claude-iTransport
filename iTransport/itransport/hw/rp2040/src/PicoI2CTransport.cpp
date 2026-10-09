@@ -32,7 +32,7 @@ struct Engine {
     uint16_t total() const  { return static_cast<uint16_t>(writes() + readLen); }
 };
 
-constexpr unsigned kBlocks    = 2;
+constexpr unsigned kBlocks    = NUM_I2CS;
 constexpr uint32_t kFifoDepth = 16;
 Engine s_engine[kBlocks];
 

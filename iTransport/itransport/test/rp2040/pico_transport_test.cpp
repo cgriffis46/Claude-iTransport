@@ -1,7 +1,7 @@
 // Host test for the RP2040 transports: PicoI2CTransport,
 // PicoSPITransport and PicoUartTransport, unchanged, over a simulation
 // of the RP2040's I2C controller, SPI, UART and DMA (sim/). Build as
-// one line, from this folder:
+// one line, from this folder (add -DSIM_RP2350 to simulate the RP2350):
 //
 //   g++ -std=c++17 -Wall -Wextra -Isim -I../../inc -I../../hw/rp2040/inc pico_transport_test.cpp
 //       sim/pico_sim.cpp ../../src/BusTransport.cpp ../../src/I2CTransport.cpp ../../src/SPITransport.cpp
@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include "sim/pico_sim.h"
+#include "hardware/dma.h"
 #include "hardware/i2c.h"
 #include "hardware/irq.h"
 #include "hardware/spi.h"
@@ -205,6 +206,22 @@ static void spiTests() {
         check(ta.readRegs(0, &ra, 1) && land(ta) && tb.readRegs(0, &rb, 1) && land(tb), "both land");
         check(ra == 0x11 && rb == 0x22, "each reads its own device, by its own chip-select");
         check(sim::irqEnabled[DMA_IRQ_1], "a transport can use DMA_IRQ_1 instead");
+    }
+
+    std::printf("PicoSPITransport: the highest DMA channels (%u on this chip)\n", NUM_DMA_CHANNELS);
+    {
+        sim::reset();
+        sim::RegDevice chip;
+        sim::spi[0].devices[6] = &chip;
+        for (unsigned i = 0; i + 2 < NUM_DMA_CHANNELS; ++i) dma_claim_unused_channel(true);   // someone else's
+        const unsigned lastLine = NUM_DMA_IRQS - 1;
+        PicoSPITransport t(spi0, 6, nullptr, lastLine);
+        const bool top = sim::dma[NUM_DMA_CHANNELS - 1].claimed && sim::dma[NUM_DMA_CHANNELS - 2].claimed;
+        check(top, "it gets the last two channels");
+        chip.reg[0x07] = 0x5C;
+        uint8_t r = 0;
+        check(t.readRegs(0x07, &r, 1) && land(t) && r == 0x5C, "and its transfers still complete on them");
+        check(sim::irqEnabled[DMA_IRQ_0 + lastLine], "on the last DMA interrupt line");
     }
 
     std::printf("PicoSPITransport: DMA channels\n");

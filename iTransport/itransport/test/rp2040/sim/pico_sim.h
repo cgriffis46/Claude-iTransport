@@ -20,6 +20,22 @@
 
 typedef unsigned int uint;
 
+// Which chip: the RP2040 by default, the RP2350 with -DSIM_RP2350.
+// They share the I2C, SPI and UART blocks; the RP2350 has 16 DMA
+// channels and 4 DMA interrupt lines instead of 12 and 2, and its own
+// interrupt numbers (hardware/irq.h).
+#ifdef SIM_RP2350
+#define NUM_DMA_CHANNELS 16u
+#define NUM_DMA_IRQS     4u
+#else
+#define NUM_DMA_CHANNELS 12u
+#define NUM_DMA_IRQS     2u
+#endif
+#define NUM_I2CS  2u
+#define NUM_SPIS  2u
+#define NUM_UARTS 2u
+#define SIM_NUM_IRQS 64u
+
 // A register: reading or writing it calls into the simulation.
 struct SimReg {
     std::function<uint32_t()>     rd;
@@ -85,7 +101,7 @@ struct UartBlock {
 
 // ---- DMA ----
 struct DmaChannel {
-    bool claimed = false, busy = false, irqLine[2] = {false, false}, status[2] = {false, false};
+    bool claimed = false, busy = false, irqLine[NUM_DMA_IRQS] = {}, status[NUM_DMA_IRQS] = {};
     volatile void* write = nullptr; const volatile void* read = nullptr;
     uint32_t count = 0; bool readInc = true, writeInc = true; uint dreq = 0;
 };
@@ -93,7 +109,7 @@ struct DmaChannel {
 extern I2cBlock   i2c[2];
 extern SpiBlock   spi[2];
 extern UartBlock  uart[2];
-extern DmaChannel dma[12];
+extern DmaChannel dma[NUM_DMA_CHANNELS];
 extern bool       gpioOut[32];
 extern int        gpioLevel[32];        // -1 until driven
 extern int        dmaChannelsAvailable; // to test running out

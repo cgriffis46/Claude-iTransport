@@ -6,19 +6,36 @@
 namespace {
 
 // Which transport each DMA channel's completion belongs to, by the
-// channel's number. Only receive channels are entered.
-constexpr unsigned kChannels = 12;
+// channel's number. Only receive channels are entered. 12 channels and
+// 2 DMA interrupt lines on the RP2040, 16 and 4 on the RP2350.
+constexpr unsigned kChannels = NUM_DMA_CHANNELS;
+constexpr unsigned kDmaIrqs  = NUM_DMA_IRQS;
 PicoSPITransport* s_byRxChannel[kChannels] = {};
-bool s_irqInstalled[2] = {false, false};
+bool s_irqInstalled[kDmaIrqs] = {};
 
 void dmaIrq0() { PicoSPITransport::handleDmaIrq(0); }
 void dmaIrq1() { PicoSPITransport::handleDmaIrq(1); }
+#if NUM_DMA_IRQS > 2
+void dmaIrq2() { PicoSPITransport::handleDmaIrq(2); }
+void dmaIrq3() { PicoSPITransport::handleDmaIrq(3); }
+#endif
+
+irq_handler_t dmaHandler(unsigned line) {
+    switch (line) {
+#if NUM_DMA_IRQS > 2
+    case 2:  return dmaIrq2;
+    case 3:  return dmaIrq3;
+#endif
+    case 1:  return dmaIrq1;
+    default: return dmaIrq0;
+    }
+}
 
 } // namespace
 
 PicoSPITransport::PicoSPITransport(spi_inst_t* spi, unsigned csPin, mutex_t* busMutex, unsigned dmaIrq)
     : PicoSyncTransport<SPITransport>(spi, nullptr, static_cast<uint16_t>(csPin), busMutex),
-      dmaIrq_(dmaIrq ? 1 : 0) {
+      dmaIrq_(dmaIrq < kDmaIrqs ? dmaIrq : 0) {
     gpio_init(csPin);
     gpio_put(csPin, true);
     gpio_set_dir(csPin, GPIO_OUT);
@@ -36,7 +53,7 @@ PicoSPITransport::PicoSPITransport(spi_inst_t* spi, unsigned csPin, mutex_t* bus
     dma_irqn_set_channel_enabled(dmaIrq_, static_cast<unsigned>(rxChan_), true);
     if (!s_irqInstalled[dmaIrq_]) {
         const unsigned irq = DMA_IRQ_0 + dmaIrq_;
-        irq_add_shared_handler(irq, dmaIrq_ == 0 ? dmaIrq0 : dmaIrq1, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
+        irq_add_shared_handler(irq, dmaHandler(dmaIrq_), PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
         irq_set_enabled(irq, true);
         s_irqInstalled[dmaIrq_] = true;
     }

@@ -51,7 +51,8 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
   HAL's weak ones, so they must be compiled into the application, never
   pulled from a static library. The STM32 headers include the
   application's CubeMX `main.h`.
-- `hw/rp2040/` (Raspberry Pi Pico, Pico SDK, no RTOS needed):
+- `hw/rp2040/` (Raspberry Pi Pico and Pico 2: the RP2040, and the RP2350
+  on its Arm or RISC-V cores; Pico SDK, no RTOS needed):
   `PicoI2CTransport` (an interrupt-driven state machine on the I2C
   controller's 16 entry FIFOs: register byte, repeated start, reads,
   NACK through TX_ABRT, finished on STOP_DET), `PicoSPITransport` (two
@@ -62,7 +63,10 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
   takes an optional `mutex_t*` for a bus used from both cores, tried
   but never waited on. Host test `test/rp2040/pico_transport_test.cpp`
   runs them over a simulation of the RP2040 peripherals behind
-  stand-in Pico SDK headers (`test/rp2040/sim/`).
+  stand-in Pico SDK headers (`test/rp2040/sim/`); built again with
+  `SIM_RP2350` as `pico_transport_test_rp2350`. Size per-chip tables
+  from the SDK's `NUM_DMA_CHANNELS`/`NUM_DMA_IRQS`/`NUM_I2CS`/`NUM_UARTS`
+  (12/2 DMA on the RP2040, 16/4 on the RP2350), never a literal.
 
 ### isensor drivers
 `aht20 bme280 bmp280 DS18B20 HMC6352 htu21df lps35hw lsm303dlhc mmc56x3
@@ -223,14 +227,14 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
 ```
 
-Last known results: isensor 20 tests (its 13 drivers plus itransport's
-tests), iTransport 7, iNetTransport 23 without the optional source
-trees (27 before the RP2040 test, with LWIP_DIR, MBEDTLS_DIR,
+Last known results: isensor 21 tests (its 13 drivers plus itransport's
+tests), iTransport 8, iNetTransport 24 without the optional source
+trees (27 before the two Pico tests, with LWIP_DIR, MBEDTLS_DIR,
 LITTLEFS_DIR and FATFS_DIR),
 PLCTransport 3 (with MBEDTLS_DIR),
-iDisplay 10 (ssd1306_test,
-hd44780_test, gui_test and itransport's 7), iRadio 10 (davis_test,
-davis_rfm69_test, xdavis_rfm69_test and itransport's 7), all passing. Each test file also
+iDisplay 11 (ssd1306_test,
+hd44780_test, gui_test and itransport's 8), iRadio 11 (davis_test,
+davis_rfm69_test, xdavis_rfm69_test and itransport's 8), all passing. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
@@ -253,7 +257,12 @@ and build a small project that includes `pico_sdk_import.cmake`, calls
 `ITRANSPORT_BUILD_WIRINGPI=OFF`, adds `isensor/` (which adds
 itransport), and links `PicoTransportLibrary` and the sensor targets:
 configure with `-DPICO_SDK_PATH=... -DPICO_BOARD=pico
--DPICO_PLATFORM=rp2040` and the xPack toolchain on `PATH`.
+-DPICO_PLATFORM=rp2040` and the xPack toolchain on `PATH`. For the
+RP2350: `-DPICO_BOARD=pico2 -DPICO_PLATFORM=rp2350-arm-s`, or
+`-DPICO_PLATFORM=rp2350-riscv -DPICO_GCC_TRIPLE=riscv-none-elf` with the
+xPack `riscv-none-elf-gcc` 14 on `PATH`. RP2350 builds fetch and build
+picotool from source the first time (`PICOTOOL_FETCH_FROM_GIT_PATH`
+keeps it for reuse).
 
 ## Related repository: cgriffis46/STM32_Static_Lib_Src
 

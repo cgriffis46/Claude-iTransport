@@ -39,6 +39,10 @@ pull request, newest first.
   checked against the ODVA specs, and the open CIP Safety questions.
   It also notes that `CipSafeRelayUartLoopback.cpp` and itransport's
   `Stm32UartItCallbacks.cpp` both define the HAL UART callbacks.
+- `CLAUDE.md`: the F207 is now planned as the central zone controller or
+  PLC, with the safety relay possibly on a smaller STM32; the deleted
+  `STM32F207ZG_SafeRelay` project was a blank template, to be recreated in
+  its own repository.
 
 #### Fixed
 - `isensor` configures for microcontroller targets again: `pbmp280_driver`,

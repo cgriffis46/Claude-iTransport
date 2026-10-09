@@ -2,10 +2,10 @@
 
 Non-blocking, asynchronous embedded drivers for STM32 (and Arduino /
 Linux), written in C++ and tested on a PC. Owner: cgriffis46.
-Targets: STM32 with FreeRTOS first (the Nucleo-F207ZG as a CIP safety
-relay and tag server, the L432KC as a sensor/transmitter node), Pico;
-later a KR260 as the safe zone controller (CIP and OPC-UA) and an RPi5
-with ROS2.
+Targets: STM32 with FreeRTOS first (the F207 as the central zone
+controller or PLC: tag server and web UI; the safety relay possibly on a
+smaller STM32; the L432KC as a sensor/transmitter node), Pico; later a
+KR260 as a zone controller (CIP and OPC-UA) and an RPi5 with ROS2.
 
 ## Working principles
 
@@ -209,9 +209,14 @@ SafeInterlock (static): evaluate() → Safe | Unsafe | Discrepancy; isFullySafe(
   Liveliness QoS fit "silence = unsafe". Electrical target: 1/4 cycle at
   60 Hz ≈ 4.17 ms.
 
-### Safety relay on the Nucleo-F207ZG
-The CubeMX project (`STM32F207ZG_SafeRelay`) was removed from this repo
-(it is in git history); `safeTransport/CipSafeRelay*.cpp` are its code.
+### Safety relay (first sketched on the Nucleo-F207ZG)
+The `STM32F207ZG_SafeRelay` CubeIDE project was still a blank template;
+it was deleted to tidy this repo and will be recreated in a separate
+repository. The plan may change: the safety relay could go on a smaller
+STM32, with the F207 as the central zone controller or PLC. The notes
+below are from that template; `safeTransport/CipSafeRelay*.cpp` are the
+relay code written for it, and carry over to whichever chip it lands on
+(pins, UARTs and clock will change).
 - Clock: 120 MHz HCLK, APB1 30 MHz, APB2 60 MHz. The PLL runs from HSI
   although the `.ioc` lists a 25 MHz HSE; switching to HSE is still to
   do. Ethernet is MII with a LAN8742 PHY, lwIP with `WITH_RTOS 1`.
@@ -497,8 +502,9 @@ STM32L432KC (L4).
 3. Moved driver member definitions into `src/*.tpp`.
 4. Moved the sensor folders into `isensor/` and made it a top-level
    module.
-5. Removed `archive/` and the `STM32F207ZG_SafeRelay` CubeIDE project
-   (both are still in git history: the old main.cpp, main_linux.cpp,
+5. Removed `archive/` and the `STM32F207ZG_SafeRelay` CubeIDE project,
+   a blank CubeIDE template to be recreated in its own repository (both
+   are still in git history: the old main.cpp, main_linux.cpp,
    conversation_transcript.pdf, and the F207 HAL/FreeRTOS/lwIP headers
    used for STM32 compile checks).
 6. Dropped the date suffixes: `iTransport_20261006` became `iTransport`
@@ -591,8 +597,9 @@ STM32L432KC (L4).
   - No tests saved (the original ones lived in `/tmp`). `Stm32HalCanTransport`
     needs a CubeMX project with CAN enabled; `SafeZoneJsonPersistence`
     needs nlohmann/json.
-- Deferred, roughly in order: the F207's HSE clock, loopback timeout and
-  serial number; wiring the loopbacks into a `SafeDevice`; the external
+- Deferred, roughly in order: choose the safety relay's chip (a smaller
+  STM32, or the F207) and recreate its CubeIDE project in its own
+  repository; HSE clock, loopback timeout and serial number; wiring the loopbacks into a `SafeDevice`; the external
   watchdog; `iTransportWifi` and `PlcTagClient`; FreeRTOS and Linux
   `EventQueue`s (ISR-safe push); real EtherNet/IP encapsulation;
   `SafeZone` logic blocks and JSON schema versions; CAN/Ethernet

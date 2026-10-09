@@ -10,6 +10,17 @@ pull request, newest first.
 ### 2026-10-09
 
 #### Added
+- `safeTransport/DualChannelLink`: the heartbeat link between the two
+  MCUs of a safety relay, each MCU one channel (one loopback UART, one
+  UART to its partner). It is a `SafeInput` for the partner's channel,
+  used with `SafeDevice` next to the MCU's own loopback. Sent on a timer
+  from boot whatever the partner does, so the two can't deadlock at
+  startup waiting on each other. Sequence counter, sender id and CRC-S3
+  catch silence, a stuck or replaying line, lost or corrupted frames, a
+  partner reset and a link wired to itself; a one-way break trips both
+  sides. The lower id is primary, for reporting only. ([#20](https://github.com/cgriffis46/Claude-iTransport/pull/20))
+- `safeTransport`'s first host test, `dual_channel_link_test` (two
+  simulated MCUs), built with `-DSENSOR_FW_BUILD_TESTS=ON`. ([#20](https://github.com/cgriffis46/Claude-iTransport/pull/20))
 - Raspberry Pi Pico and Pico 2 transports in `iTransport/itransport/hw/rp2040/`,
   on the Pico SDK, non-blocking and with no RTOS needed. They run on the
   RP2040 and on the RP2350 (Arm or RISC-V cores), sizing their tables
@@ -31,6 +42,18 @@ pull request, newest first.
     transports, unchanged, over a simulation of the chip's I2C, SPI,
     UART and DMA behind stand-in Pico SDK headers, once as an RP2040
     and once as an RP2350. ([#19](https://github.com/cgriffis46/Claude-iTransport/pull/19))
+
+#### Changed
+- `CLAUDE.md` now carries the original sensor_fw design record: the
+  working principles, the safeTransport and PLCTransport designs, the
+  F207 safety relay's hardware and watchdog decisions, the CIP facts
+  checked against the ODVA specs, and the open CIP Safety questions.
+  It also notes that `CipSafeRelayUartLoopback.cpp` and itransport's
+  `Stm32UartItCallbacks.cpp` both define the HAL UART callbacks. ([#20](https://github.com/cgriffis46/Claude-iTransport/pull/20))
+- `CLAUDE.md`: the F207 is now planned as the central zone controller or
+  PLC, with the safety relay possibly on a smaller STM32; the deleted
+  `STM32F207ZG_SafeRelay` project was a blank template, to be recreated in
+  its own repository. ([#20](https://github.com/cgriffis46/Claude-iTransport/pull/20))
 
 #### Fixed
 - `isensor` configures for microcontroller targets again: `pbmp280_driver`,

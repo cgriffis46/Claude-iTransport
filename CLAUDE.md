@@ -2,6 +2,39 @@
 
 Non-blocking, asynchronous embedded drivers for STM32 (and Arduino /
 Linux), written in C++ and tested on a PC. Owner: cgriffis46.
+Targets: STM32 with FreeRTOS first (the F207 as the central zone
+controller or PLC: tag server and web UI; the safety relay possibly on a
+smaller STM32; the L432KC as a sensor/transmitter node), Pico; later a
+KR260 as a zone controller (CIP and OPC-UA) and an RPi5 with ROS2.
+
+## Working principles
+
+Carried over from the original sensor_fw design sessions; keep applying them.
+
+1. Verify against the real thing (datasheets, ODVA specs, the real
+   vendor headers) and say plainly what is not verified. Anything taken
+   from general knowledge is labelled so in a comment. Stub headers hid
+   two real bugs once (a missing `lwip/tcpip.h`, no `std::mutex` on the
+   ARM toolchain), so STM32 checks compile against the real headers.
+2. Abstract interface, platform-specific implementation (`iTransport`,
+   `Safe`, `SafeInput`, `SafeOutput`, `EventQueue`).
+3. Inject, don't own: composing classes hold references or pointers to
+   objects owned elsewhere, with the lifetime documented.
+4. Never optimistically safe: an empty zone is unsafe, disagreeing
+   channels are unsafe, boot is latched unsafe. Safety decisions go
+   through `SafeInterlock`, never `GetSafe1State()`/`GetSafe2State()`.
+5. Going unsafe is immediate and ungated; returning to safe needs an
+   explicit action.
+6. Explicit over convenient (`addMember()` needs a name and a code;
+   `LightCurtain` needs two inputs).
+7. Callbacks and output writes fire on real transitions, not every poll.
+8. Processing is explicit and polled (`poll()`, `EvaluateSafe()`,
+   `processEvents()` are called by the owner), not hidden async.
+9. Off is safe (de-energize to trip).
+10. Little-endian on the wire (CIP's order).
+11. No dynamic allocation in embedded core classes where practical;
+    exceptions are noted.
+12. When a design fork is significant, describe it and ask before building.
 
 ## Layout
 
@@ -126,6 +159,169 @@ older style) and `SensorStateMachine`.
   6.7 ms airtime and 1 ms RX settling; `test/stub/` is a single threaded
   FreeRTOS in which time passes only inside `ulTaskNotifyTake()`.
 
+### safeTransport (flat folder, builds on HOST; one test so far)
+```
+Safe (GetSafe1/2State, SetSafe1/2Callback)
+ ├─ SafeInput  → TransportSafeInput, GpioSafeInput, UartLoopbackChannelSafeInput
+ ├─ SafeOutput → TransportSafeOutput, GpioSafeOutput
+ ├─ SafeDevice (2 SafeInputs + SafeOutput [+ optional reset SafeInput])
+ │    └─ LightCurtain (same constructor, a named domain type)
+ ├─ SafeZone   (aggregates Safe*; AND only)
+ └─ UartLoopbackSafe (dual-channel loopback, polled with nowTicks)
+SafeInterlock (static): evaluate() → Safe | Unsafe | Discrepancy; isFullySafe()
+```
+- `SafeDevice` starts latched unsafe. `reset()` clears the latch only if
+  both raw inputs agree safe now. A `resetInput` false→true edge calls
+  `reset()` (a button held at boot clears nothing). Output writes are
+  change-gated, plus one forced write at construction.
+- `SafeZone` holds `Safe*`, so zones nest and one signal (a light
+  curtain) can be in many zones: a breach cascades to every robot zone
+  while a robot's local fault stays in its own. `addMember(Safe&, name,
+  safetyCode)`. AND only: configurable logic (OR etc., as in commercial
+  zone controllers) is not built; the header marks where a `Logic` enum
+  would go. `DiscoverSafeDevices()` is a no-op.
+- `LightCurtain` keeps `SafeDevice`'s manual-reset latch (a bare
+  `SafeInput` would recover by itself when the beam clears). A
+  single-output curtain passes the same input twice, which is harmless
+  but means `SafeInterlock` can never see a Discrepancy.
+- `SafeZoneJsonPersistence` (Linux only, built when nlohmann/json is
+  found): `{zone_name, devices:[{name, safety_code}]}`, written via temp
+  file + rename. Reading gives a manifest only;
+  `verifyMembersMatchManifest()` reports drift. Bad JSON or schema
+  rejects the whole file. No schema version yet.
+- Events are separate from Safe: Safe = must act now, boolean, latched;
+  an Event is a graduated notice (e.g. nearing a no-fly zone). Don't
+  stretch `Safe` into levels. `EventCode` is an open `uint16_t` (0–1
+  reserved, ranges per domain such as 1000+ for drones); `Event` = code,
+  timestamp, ≤8 bytes. `SimpleEventQueue<N>` is a ring buffer, not
+  thread-safe, returns false when full. `SafeToEventBridge` pushes on
+  transitions and sets no timestamps.
+- Two-MCU relay: each MCU is one channel, with one UART as its own
+  loopback (`UartLoopbackChannelSafeInput`) and one UART to the other
+  MCU (TX to RX both ways) carrying a heartbeat. `DualChannelLink` is
+  that link, and a `SafeInput` for the partner's channel:
+  `SafeDevice(ownLoop, link, output, &resetButton)`. 11 byte frame
+  (`A5 5A`, seq, 32-bit id, flags, CRC-S3), sent on a timer from boot
+  whatever the partner does, saying only what this MCU measured, so
+  the old startup deadlock (each waiting on the other's "safe") can't
+  happen. The partner counts as safe while frames keep coming (under
+  `timeoutTicks`), each seq is the last + 1 (a repeat, gap or jump back
+  is a fault until `framesToTrust` in a row), the id isn't ours, and it
+  reports its loopback good and that it hears us (so a one-way break
+  trips both). Faults report unsafe at once, per frame. Lower id is
+  `Primary`, for reporting only; safety stays symmetric. Interrupt to
+  task through an SPSC ring (atomic load/store only, fine on an M0).
+  For 4.17 ms at 1 ms ticks: poll and send every tick, timeout 3, link
+  at ~1 Mbaud. Test: `test/dual_channel_link_test.cpp` (two simulated
+  MCUs).
+- CRCs: `CrcS3` (CRC-S3) and `CipSafetyBaseFormatCrc` (see CIP facts
+  below); `CipSafetyCodec` is a placeholder.
+- Also here: `Stm32L4SafetyRelay` (dual channel + IWDG), CAN
+  (`Stm32HalCanTransport`, `Stm32CanSafetyBroadcaster`),
+  `LinuxUdpTransport`, `xBNO085` (a scaffold on native FreeRTOS stream
+  buffers; SHTP has no CRC check, reports not parsed).
+- Design intent for drones and robots (not code): isolated safety zones
+  per robot plus floor-wide shared zones; CAN safety relays inside each
+  drone. LoRa is not a safety data path (duty cycle, airtime ≫ ms), fine
+  for telemetry. ROS2's default middleware is DDS, whose Deadline and
+  Liveliness QoS fit "silence = unsafe". Electrical target: 1/4 cycle at
+  60 Hz ≈ 4.17 ms.
+
+### Safety relay (first sketched on the Nucleo-F207ZG)
+The `STM32F207ZG_SafeRelay` CubeIDE project was still a blank template;
+it was deleted to tidy this repo and will be recreated in a separate
+repository. The plan may change: the safety relay could go on a smaller
+STM32, with the F207 as the central zone controller or PLC. The notes
+below are from that template; `safeTransport/CipSafeRelay*.cpp` are the
+relay code written for it, and carry over to whichever chip it lands on
+(pins, UARTs and clock will change).
+- Clock: 120 MHz HCLK, APB1 30 MHz, APB2 60 MHz. The PLL runs from HSI
+  although the `.ioc` lists a 25 MHz HSE; switching to HSE is still to
+  do. Ethernet is MII with a LAN8742 PHY, lwIP with `WITH_RTOS 1`.
+- `CipSafeRelayUartLoopback.cpp` (written before the two-MCU design:
+  two loopbacks on one chip): UART4/UART5 loopbacks at 115200 8N1
+  need jumpers PA0↔PC11 and PC12↔PD2 (without them: unsafe forever).
+  CubeMX generates the IRQ handlers; don't add them by hand. Objects are
+  made with `new` in `InitUartSafetyLoopback()` from `USER CODE BEGIN 2`.
+  Its `HAL_UART_*CpltCallback`s must be `extern "C"`. Placeholders: the
+  pattern `{0xA5,0x5A,0x3C,0xC3}` (use the serial number) and
+  `timeoutTicks=50` (untuned). `UartSafetyLoopbackIsSafe()` is not yet
+  wired into a `SafeDevice`/`SafeZone`.
+- IWDG ÷4, reload 4095 ≈ 512 ms at a nominal 32 kHz LSI (LSI can be off
+  by 30–40%). `FeedIwdgIfSafe()` refreshes only while the loopbacks are
+  safe; call it right after `PollUartSafetyLoopback()`. WWDG is off (its
+  window was ~136 µs).
+- The IWDG is the last resort for a hung MCU, not what meets the 1/4
+  cycle response (that is `SafeOutput` following `SafeInterlock`). GPIOs
+  float through reset, so the output stage must be off-is-safe in
+  hardware (pull-down, energize to run). Under consideration: an
+  external watchdog IC (TPS3813, MAX6369/6370 as starting points only)
+  gating the output stage's power, kicked from a GPIO only while safe,
+  ideally by a timer in toggle mode. A bootloader that sets a
+  user-defined safe state is deferred; it's only needed if a site's safe
+  state is "on".
+- CubeMX workflow: the owner edits the `.ioc` and regenerates; our code
+  stays in `USER CODE` sections.
+
+### PLCTransport (CIP tag server)
+1. `PlcTagRegistry` (+ `PlcDataType`, `PlcTagDescriptor`): register a
+   variable or struct by name, type from `PlcTypeTraits<T>`
+   (`registerStructTag()` for structs). Live pointers, one mutex.
+   Rejects duplicate names, writes to read-only tags and wrong sizes.
+2. `CipTagMessageCodec::handleRequest()`: a Message Router request in, a
+   response out; Get/Set_Attribute_Single on one symbolic segment only.
+   Always answers (with an error status if need be). Not a general router.
+   Uses `std::vector`, so it needs a heap.
+3. `hw/freertos/CipTagTcpServer` (lwIP raw API): callbacks run in
+   `tcpip_thread` and must not block, so `tcp_recv` fills a per-slot
+   accumulator, whole frames go to that slot's stream buffer and
+   `{slot, generation}` to one shared queue; one worker task runs the
+   codec; `tcpip_callback()` sends the reply from `tcpip_thread`. 8 fixed
+   slots (extra connections `tcp_abort()`ed in `onAccept`). `tcp_arg` is
+   the slot's own address, because `tcp_err_fn` gets no pcb. The
+   generation counter stops a reply landing on a reused slot. One
+   request in flight per connection (a pipelining client is aborted).
+   Start it from `MX_LWIP_Init()`'s `USER CODE BEGIN 3`. Checked only
+   with `-fsyntax-only` against the real F207 headers.
+4. Not started: `PlcTagClient<TTransport>` limited to Ethernet/Wi-Fi
+   transports (needs an `iTransportWifi` marker).
+- `CipFrame` (2-byte LE length prefix) only delimits messages on TCP; it
+  is not EtherNet/IP encapsulation (that needs ODVA Vol. 2).
+- `PlcMutex` is an `osMutex` with `PLC_MUTEX_USE_CMSIS_RTOS2`, else
+  `std::mutex` (the ARM toolchain is "Thread model: single").
+- OPC-UA is deferred: open62541 with a thin adapter over the registry,
+  "None" security first, on the KR260. STM32s speak CIP only.
+
+### CIP facts (checked in ODVA Vol. 1 Ed. 3.3 and Vol. 5 Ed. 2.3)
+Vol. 5 is scanned (CRC chapter ≈ PDF pages 28–44, Appendix E from 489,
+Safety Supervisor ≈195+). Vol. 2 (EtherNet/IP) was not available.
+- CRC-S3: width 16, poly 0x080F, no reflection, XorOut 0; CRC of
+  `"123456789"` from 0xFFFF = 0x9516 (tested). CRC-S1 0x37, CRC-S2 0x3B,
+  CRC-S5 0x5D6DCB (24-bit).
+- Base Format actual data CRC (FRS42): PID, `modeByte & 0xE0`, data,
+  through CRC-S3. Complement CRC (FRS43): PID, `(modeByte ^ 0xFF) & 0xE0`,
+  complemented data.
+- Mode byte: bit 7 Run_Idle, 6 TBD_2, 5 TBD, 4 N_Run_Idle, 3 TBD_2 copy,
+  2 N_TBD, 1:0 Ping_Count.
+- PID: the 32-bit LE connection ID per connection and direction from
+  `Forward_Open`/`SafetyOpen` (Vol. 1 Tables 3-5.16/17). Never sent in the
+  frame; only seeds the CRC so a wrong sender fails it.
+- Message Router (Vol. 1 Tables 2-4.1/2): request = service, path size
+  in 16-bit words, padded EPATH, data; response = service|0x80, 0,
+  general status, additional status size (words), data.
+  Get_Attribute_Single 0x0E, Set_Attribute_Single 0x10.
+- Symbolic segment: 0x91, length, ASCII, a pad byte if odd. `"tag1"` =
+  `91 04 74 61 67 31` (Table 3-5.15; our encoder matches).
+- General status: 0x00 ok, 0x04 path segment error, 0x05 destination
+  unknown, 0x08 service not supported, 0x0E not settable, 0x13 not
+  enough data, 0x15 too much data.
+- Types: BOOL C1, SINT C2, INT C3, DINT C4, LINT C5, USINT C6, UINT C7,
+  UDINT C8, ULINT C9, REAL CA, LREAL CB; A2 is our "opaque struct".
+- CIP Safety has no broadcast discovery: `Propose_TUNID` (0x56) /
+  `Apply_TUNID` commission a device already addressed and in
+  `Waiting_for_TUNID`. Generic discovery is EtherNet/IP `List_Identity`
+  (general knowledge, Vol. 2, not verified).
+
 ### iNetTransport on the STM32L432KC
 - An L432 board has one network interface, the W5500 or an ESP-AT module,
   never both. The bring-up firmware's build refuses both. A design that
@@ -218,7 +414,8 @@ Every module builds on its own on a PC. Use these flags for host tests:
 cmake -S <isensor|iTransport|iNetTransport> -B build \
       -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON
 cmake --build build && ctest --test-dir build
-cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST      # builds, no tests
+cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST \
+      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # dual_channel_link_test
 cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON \
       -DMBEDTLS_DIR=<mbedtls-3.6.2 source>                         # plc_tags, plc_web, 3 tests
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
@@ -231,7 +428,8 @@ Last known results: isensor 21 tests (its 13 drivers plus itransport's
 tests), iTransport 8, iNetTransport 24 without the optional source
 trees (27 before the two Pico tests, with LWIP_DIR, MBEDTLS_DIR,
 LITTLEFS_DIR and FATFS_DIR),
-PLCTransport 3 (with MBEDTLS_DIR),
+PLCTransport 3 (with MBEDTLS_DIR), safeTransport 9
+(dual_channel_link_test and itransport's 8),
 iDisplay 11 (ssd1306_test,
 hd44780_test, gui_test and itransport's 8), iRadio 11 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test and itransport's 8), all passing. Each test file also
@@ -325,8 +523,9 @@ STM32L432KC (L4).
 3. Moved driver member definitions into `src/*.tpp`.
 4. Moved the sensor folders into `isensor/` and made it a top-level
    module.
-5. Removed `archive/` and the `STM32F207ZG_SafeRelay` CubeIDE project
-   (both are still in git history: the old main.cpp, main_linux.cpp,
+5. Removed `archive/` and the `STM32F207ZG_SafeRelay` CubeIDE project,
+   a blank CubeIDE template to be recreated in its own repository (both
+   are still in git history: the old main.cpp, main_linux.cpp,
    conversation_transcript.pdf, and the F207 HAL/FreeRTOS/lwIP headers
    used for STM32 compile checks).
 6. Dropped the date suffixes: `iTransport_20261006` became `iTransport`
@@ -372,6 +571,11 @@ STM32L432KC (L4).
 22. The UI on SPI flash (LittleFS) or an SD card (FatFs), uploaded from
     `/files.html` by an admin: `storage/`, `HttpFileStore`,
     `HttpFileAdmin`, `iLock`.
+23. Pico (RP2040) and Pico 2 (RP2350) I2C, SPI and UART transports.
+24. The sensor_fw design record merged into this file. The two-MCU
+    safety relay: one loopback UART and one heartbeat UART per MCU,
+    `DualChannelLink`, replacing the digital output between them that
+    meant "my loopback is complete".
 
 ## Open items
 
@@ -394,11 +598,45 @@ STM32L432KC (L4).
   LSM303DLHC and HMC6352 sequences come from datasheets only.
 - The STM32CubeIDE projects were checked with arm-none-eabi-gcc using
   their `.cproject` settings, but have not been opened in CubeIDE.
-- `safeTransport`: `CipSafetyCodec.h` and `CipSafetyBaseFormatCrc.h`
-  are deliberate placeholders (encode/decode return false until
-  written against ODVA's CIP Safety spec). `Stm32HalCanTransport` needs
-  a CubeMX project with CAN enabled, and `SafeZoneJsonPersistence`
-  needs nlohmann/json.
+- CIP Safety, highest priority (the owner is getting official ODVA
+  editions to confirm):
+  1. The CRC seed 0x0000 before the PID is an inference, stated nowhere
+     in Vol. 1 or 5 (Appendix E uses 0xFFFF only for its self-test). It
+     is isolated in `CipSafetyBaseFormatCrc::kAssumedInitialSeed`; look
+     there first if a real device disagrees.
+  2. FRS45 says "Producer Identifier *byte*" for the time stamp CRC-S1;
+     FRS42/43 just say PID. Only the CRC-S3 Base Format (3–250 bytes)
+     is implemented.
+  3. `CipSafetyCodec` returns false: no frame assembly, Extended Format
+     (CRC-S5 split across the timestamp), time coordination/correction.
+  4. Whether CIP Safety may run over Wi-Fi, LoRa or MQTT is unknown.
+- `safeTransport`:
+  - These still include `stm32f4xx_hal.h` instead of `main.h`:
+    `Stm32HalCanTransport`, `Stm32_Safe_Relay`, `Stm32L4SafetyRelay`,
+    `Stm32SafeUartTransport`, `GpioSafeInput`, `GpioSafeOutput`. Fix
+    before using them on the F207 or L4.
+  - `CipSafeRelayUartLoopback.cpp` defines `HAL_UART_TxCpltCallback`/
+    `RxCpltCallback`, as does itransport's `Stm32UartItCallbacks.cpp`: an
+    application can't link both until one dispatches to the other.
+  - `UartLoopbackSafe` and `UartLoopbackChannelSafeInput` share state
+    between the interrupt and the task with no volatile or critical
+    section (`DualChannelLink` uses a ring for this).
+  - `DualChannelLink` has not run on chips: no UART at 1 Mbaud, no
+    real response time measured, no chip yet chosen. Nothing yet
+    reads the chip's UID for the id.
+  - Only `DualChannelLink` has a test (the original tests lived in
+    `/tmp`). `Stm32HalCanTransport`
+    needs a CubeMX project with CAN enabled; `SafeZoneJsonPersistence`
+    needs nlohmann/json.
+- Deferred, roughly in order: choose the safety relay's chip (a smaller
+  STM32, or the F207) and recreate its CubeIDE project in its own
+  repository; HSE clock, loopback timeout and serial number; wiring the loopbacks into a `SafeDevice`; the external
+  watchdog; `iTransportWifi` and `PlcTagClient`; FreeRTOS and Linux
+  `EventQueue`s (ISR-safe push); real EtherNet/IP encapsulation;
+  `SafeZone` logic blocks and JSON schema versions; CAN/Ethernet
+  `DiscoverSafeDevices()`; OPC-UA; BNO085 reports, `pBNO085`, a ROS2
+  altitude publisher from `pBMP280` (RPi5), the KR260 zone controller,
+  openSAFETY.
 - `iDisplay`: the HD44780 driver covers the I2C backpacks only (not
   direct GPIO, not the 74HC595/SPI side). No inactivity timeout back to home (post `Home` from an
   application timer). FeatherM0_Davis_ISS_Ethernet's screens have not

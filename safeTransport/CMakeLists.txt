@@ -21,15 +21,22 @@ project(safe_transport LANGUAGES CXX)
 #   FREERTOS_INCLUDE_DIRS     FreeRTOS include/ and portable/ folders,
 #                             and FreeRTOSConfig.h's folder (STM32)
 #
-# Host build of everything that needs no hardware:
-#   cmake -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF
-#   cmake --build build
+# Host build of everything that needs no hardware, and the tests:
+#   cmake -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF \
+#         -DSENSOR_FW_BUILD_TESTS=ON
+#   cmake --build build && ctest --test-dir build
 
 set(ITRANSPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../iTransport/itransport
     CACHE PATH "The itransport folder to build against")
 
 # A Raspberry Pi transport has no use here.
 set(ITRANSPORT_BUILD_WIRINGPI OFF CACHE BOOL "Build WiringPiTransportLibrary")
+
+# Before itransport, so its tests are run by this ctest too.
+option(SENSOR_FW_BUILD_TESTS "Build the host tests" OFF)
+if(SENSOR_FW_BUILD_TESTS)
+    enable_testing()
+endif()
 
 add_subdirectory(${ITRANSPORT_DIR} itransport)
 
@@ -81,11 +88,21 @@ add_library(safety_transport STATIC
     UartLoopbackSafe.cpp
     UartLoopbackChannelSafeInput.h
     UartLoopbackChannelSafeInput.cpp
+    DualChannelLink.h
+    DualChannelLink.cpp
     iTransportCan.h
     iTransportEthernet.h
 )
 
 target_link_libraries(safety_transport PUBLIC safety_core sensor_transport)
+
+# --- tests ---------------------------------------------------------------
+if(SENSOR_FW_BUILD_TESTS)
+    # Two simulated MCUs joined by the heartbeat link.
+    add_executable(dual_channel_link_test test/dual_channel_link_test.cpp)
+    target_link_libraries(dual_channel_link_test PRIVATE safety_transport)
+    add_test(NAME dual_channel_link_test COMMAND dual_channel_link_test)
+endif()
 
 # --- safezone_json -------------------------------------------------------
 # Saves and loads SafeZones as JSON. Built only where nlohmann/json is

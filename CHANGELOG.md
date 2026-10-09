@@ -30,12 +30,12 @@ pull request, newest first.
   - `pico_transport_test` and `pico_transport_test_rp2350`: the
     transports, unchanged, over a simulation of the chip's I2C, SPI,
     UART and DMA behind stand-in Pico SDK headers, once as an RP2040
-    and once as an RP2350.
+    and once as an RP2350. ([#19](https://github.com/cgriffis46/Claude-iTransport/pull/19))
 
 #### Fixed
 - `isensor` configures for microcontroller targets again: `pbmp280_driver`,
   the Linux BMP280 variant, is only built where POSIX threads exist,
-  instead of failing the whole configure on toolchains without them.
+  instead of failing the whole configure on toolchains without them. ([#19](https://github.com/cgriffis46/Claude-iTransport/pull/19))
 
 ### 2026-10-08
 

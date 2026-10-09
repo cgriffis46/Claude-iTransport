@@ -32,6 +32,14 @@ pull request, newest first.
     UART and DMA behind stand-in Pico SDK headers, once as an RP2040
     and once as an RP2350. ([#19](https://github.com/cgriffis46/Claude-iTransport/pull/19))
 
+#### Changed
+- `CLAUDE.md` now carries the original sensor_fw design record: the
+  working principles, the safeTransport and PLCTransport designs, the
+  F207 safety relay's hardware and watchdog decisions, the CIP facts
+  checked against the ODVA specs, and the open CIP Safety questions.
+  It also notes that `CipSafeRelayUartLoopback.cpp` and itransport's
+  `Stm32UartItCallbacks.cpp` both define the HAL UART callbacks.
+
 #### Fixed
 - `isensor` configures for microcontroller targets again: `pbmp280_driver`,
   the Linux BMP280 variant, is only built where POSIX threads exist,

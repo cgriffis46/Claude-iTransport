@@ -159,7 +159,7 @@ older style) and `SensorStateMachine`.
   6.7 ms airtime and 1 ms RX settling; `test/stub/` is a single threaded
   FreeRTOS in which time passes only inside `ulTaskNotifyTake()`.
 
-### safeTransport (flat folder, builds on HOST, no tests yet)
+### safeTransport (flat folder, builds on HOST; one test so far)
 ```
 Safe (GetSafe1/2State, SetSafe1/2Callback)
  ├─ SafeInput  → TransportSafeInput, GpioSafeInput, UartLoopbackChannelSafeInput
@@ -196,6 +196,24 @@ SafeInterlock (static): evaluate() → Safe | Unsafe | Discrepancy; isFullySafe(
   timestamp, ≤8 bytes. `SimpleEventQueue<N>` is a ring buffer, not
   thread-safe, returns false when full. `SafeToEventBridge` pushes on
   transitions and sets no timestamps.
+- Two-MCU relay: each MCU is one channel, with one UART as its own
+  loopback (`UartLoopbackChannelSafeInput`) and one UART to the other
+  MCU (TX to RX both ways) carrying a heartbeat. `DualChannelLink` is
+  that link, and a `SafeInput` for the partner's channel:
+  `SafeDevice(ownLoop, link, output, &resetButton)`. 11 byte frame
+  (`A5 5A`, seq, 32-bit id, flags, CRC-S3), sent on a timer from boot
+  whatever the partner does, saying only what this MCU measured, so
+  the old startup deadlock (each waiting on the other's "safe") can't
+  happen. The partner counts as safe while frames keep coming (under
+  `timeoutTicks`), each seq is the last + 1 (a repeat, gap or jump back
+  is a fault until `framesToTrust` in a row), the id isn't ours, and it
+  reports its loopback good and that it hears us (so a one-way break
+  trips both). Faults report unsafe at once, per frame. Lower id is
+  `Primary`, for reporting only; safety stays symmetric. Interrupt to
+  task through an SPSC ring (atomic load/store only, fine on an M0).
+  For 4.17 ms at 1 ms ticks: poll and send every tick, timeout 3, link
+  at ~1 Mbaud. Test: `test/dual_channel_link_test.cpp` (two simulated
+  MCUs).
 - CRCs: `CrcS3` (CRC-S3) and `CipSafetyBaseFormatCrc` (see CIP facts
   below); `CipSafetyCodec` is a placeholder.
 - Also here: `Stm32L4SafetyRelay` (dual channel + IWDG), CAN
@@ -220,7 +238,8 @@ relay code written for it, and carry over to whichever chip it lands on
 - Clock: 120 MHz HCLK, APB1 30 MHz, APB2 60 MHz. The PLL runs from HSI
   although the `.ioc` lists a 25 MHz HSE; switching to HSE is still to
   do. Ethernet is MII with a LAN8742 PHY, lwIP with `WITH_RTOS 1`.
-- `CipSafeRelayUartLoopback.cpp`: UART4/UART5 loopbacks at 115200 8N1
+- `CipSafeRelayUartLoopback.cpp` (written before the two-MCU design:
+  two loopbacks on one chip): UART4/UART5 loopbacks at 115200 8N1
   need jumpers PA0↔PC11 and PC12↔PD2 (without them: unsafe forever).
   CubeMX generates the IRQ handlers; don't add them by hand. Objects are
   made with `new` in `InitUartSafetyLoopback()` from `USER CODE BEGIN 2`.
@@ -395,7 +414,8 @@ Every module builds on its own on a PC. Use these flags for host tests:
 cmake -S <isensor|iTransport|iNetTransport> -B build \
       -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON
 cmake --build build && ctest --test-dir build
-cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST      # builds, no tests
+cmake -S safeTransport -B build -DSENSOR_FW_HARDWARE=HOST \
+      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # dual_channel_link_test
 cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON \
       -DMBEDTLS_DIR=<mbedtls-3.6.2 source>                         # plc_tags, plc_web, 3 tests
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
@@ -408,7 +428,8 @@ Last known results: isensor 21 tests (its 13 drivers plus itransport's
 tests), iTransport 8, iNetTransport 24 without the optional source
 trees (27 before the two Pico tests, with LWIP_DIR, MBEDTLS_DIR,
 LITTLEFS_DIR and FATFS_DIR),
-PLCTransport 3 (with MBEDTLS_DIR),
+PLCTransport 3 (with MBEDTLS_DIR), safeTransport 9
+(dual_channel_link_test and itransport's 8),
 iDisplay 11 (ssd1306_test,
 hd44780_test, gui_test and itransport's 8), iRadio 11 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test and itransport's 8), all passing. Each test file also
@@ -550,6 +571,11 @@ STM32L432KC (L4).
 22. The UI on SPI flash (LittleFS) or an SD card (FatFs), uploaded from
     `/files.html` by an admin: `storage/`, `HttpFileStore`,
     `HttpFileAdmin`, `iLock`.
+23. Pico (RP2040) and Pico 2 (RP2350) I2C, SPI and UART transports.
+24. The sensor_fw design record merged into this file. The two-MCU
+    safety relay: one loopback UART and one heartbeat UART per MCU,
+    `DualChannelLink`, replacing the digital output between them that
+    meant "my loopback is complete".
 
 ## Open items
 
@@ -592,9 +618,14 @@ STM32L432KC (L4).
   - `CipSafeRelayUartLoopback.cpp` defines `HAL_UART_TxCpltCallback`/
     `RxCpltCallback`, as does itransport's `Stm32UartItCallbacks.cpp`: an
     application can't link both until one dispatches to the other.
-  - `UartLoopbackSafe` ISR/task shared state has no volatile or critical
-    section; a dual-MCU startup deadlock (both waiting) is unsolved.
-  - No tests saved (the original ones lived in `/tmp`). `Stm32HalCanTransport`
+  - `UartLoopbackSafe` and `UartLoopbackChannelSafeInput` share state
+    between the interrupt and the task with no volatile or critical
+    section (`DualChannelLink` uses a ring for this).
+  - `DualChannelLink` has not run on chips: no UART at 1 Mbaud, no
+    real response time measured, no chip yet chosen. Nothing yet
+    reads the chip's UID for the id.
+  - Only `DualChannelLink` has a test (the original tests lived in
+    `/tmp`). `Stm32HalCanTransport`
     needs a CubeMX project with CAN enabled; `SafeZoneJsonPersistence`
     needs nlohmann/json.
 - Deferred, roughly in order: choose the safety relay's chip (a smaller

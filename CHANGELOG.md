@@ -10,6 +10,17 @@ pull request, newest first.
 ### 2026-10-09
 
 #### Added
+- `safeTransport/DualChannelLink`: the heartbeat link between the two
+  MCUs of a safety relay, each MCU one channel (one loopback UART, one
+  UART to its partner). It is a `SafeInput` for the partner's channel,
+  used with `SafeDevice` next to the MCU's own loopback. Sent on a timer
+  from boot whatever the partner does, so the two can't deadlock at
+  startup waiting on each other. Sequence counter, sender id and CRC-S3
+  catch silence, a stuck or replaying line, lost or corrupted frames, a
+  partner reset and a link wired to itself; a one-way break trips both
+  sides. The lower id is primary, for reporting only.
+- `safeTransport`'s first host test, `dual_channel_link_test` (two
+  simulated MCUs), built with `-DSENSOR_FW_BUILD_TESTS=ON`.
 - Raspberry Pi Pico and Pico 2 transports in `iTransport/itransport/hw/rp2040/`,
   on the Pico SDK, non-blocking and with no RTOS needed. They run on the
   RP2040 and on the RP2350 (Arm or RISC-V cores), sizing their tables

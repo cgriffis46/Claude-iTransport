@@ -7,6 +7,32 @@ pull request, newest first.
 
 ## Unreleased
 
+### 2026-10-09
+
+#### Added
+- RP2040 (Raspberry Pi Pico) transports in `iTransport/itransport/hw/rp2040/`,
+  on the Pico SDK, non-blocking and with no RTOS needed:
+  - `PicoI2CTransport`: an interrupt-driven state machine on the I2C
+    controller's FIFOs, for register reads and writes (repeated start)
+    and command-style chips, up to the full 33 bytes. A NACK fails the
+    transfer; `checkDevice()` probes with a one byte read.
+  - `PicoSPITransport`: DMA for both directions, finished by the DMA
+    interrupt, with a GPIO chip-select.
+  - `PicoUartTransport`: the `iTransport` byte stream, received from
+    the UART interrupt into the sink and sent by DMA.
+  - `PicoSyncTransport<TBus>`: an optional Pico `mutex_t` per bus for
+    sharing it between the two cores, tried without waiting.
+  - `SENSOR_FW_HARDWARE=RP2040` builds them as `PicoTransportLibrary`
+    from a Pico SDK project.
+  - `pico_transport_test`: the transports, unchanged, over a simulation
+    of the RP2040's I2C, SPI, UART and DMA behind stand-in Pico SDK
+    headers.
+
+#### Fixed
+- `isensor` configures for microcontroller targets again: `pbmp280_driver`,
+  the Linux BMP280 variant, is only built where POSIX threads exist,
+  instead of failing the whole configure on toolchains without them.
+
 ### 2026-10-08
 
 #### Added

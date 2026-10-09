@@ -24,6 +24,10 @@ set(ITRANSPORT_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 #               a plain AVR Uno/Mega/Nano with no RTOS at all. Derives from
 #               I2CTransport directly, not FreeRtosTransport<I2CTransport>; its
 #               busy-wait/delay(1) fallback is what makes that possible.
+#   RP2040   -> PicoI2CTransport, PicoSPITransport, PicoUartTransport, for a
+#               Raspberry Pi Pico, on the Pico SDK. Interrupt and DMA driven,
+#               no RTOS needed. The including project must have called
+#               pico_sdk_init() first.
 #   HOST     -> no hardware transport at all: only the platform-independent
 #               libraries, e.g. for building the host tests on a PC.
 #
@@ -34,14 +38,15 @@ set(ITRANSPORT_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 # which files this flag controls and which (ISensorTransport.h,
 # I2CTransport, SPITransport, SensorBase, BMP280Sensor) are shared.
 set(SENSOR_FW_HARDWARE "STM32" CACHE STRING
-    "Target hardware platform for the transport implementation: STM32, ARDUINO or HOST")
-set_property(CACHE SENSOR_FW_HARDWARE PROPERTY STRINGS STM32 ARDUINO HOST)
+    "Target hardware platform for the transport implementation: STM32, ARDUINO, RP2040 or HOST")
+set_property(CACHE SENSOR_FW_HARDWARE PROPERTY STRINGS STM32 ARDUINO RP2040 HOST)
 
-if(NOT SENSOR_FW_HARDWARE MATCHES "^(STM32|ARDUINO|HOST)$")
+if(NOT SENSOR_FW_HARDWARE MATCHES "^(STM32|ARDUINO|RP2040|HOST)$")
     message(FATAL_ERROR
-        "SENSOR_FW_HARDWARE is '${SENSOR_FW_HARDWARE}' — expected STM32, ARDUINO or HOST.\n"
+        "SENSOR_FW_HARDWARE is '${SENSOR_FW_HARDWARE}' — expected STM32, ARDUINO, RP2040 or HOST.\n"
         "  cmake -B build -DSENSOR_FW_HARDWARE=STM32 ...\n"
         "  cmake -B build -DSENSOR_FW_HARDWARE=ARDUINO ...\n"
+        "  cmake -B build -DSENSOR_FW_HARDWARE=RP2040 ...   (from a Pico SDK project)\n"
         "  cmake -B build -DSENSOR_FW_HARDWARE=HOST ...")
 endif()
 
@@ -82,7 +87,7 @@ target_compile_features(sensor_transport PUBLIC cxx_std_17)
 set_target_properties(sensor_transport PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${ITRANSPORT_LIB_DIR})
 
 # --- Hardware transport library -----------------------------------------
-# At most one of these two blocks runs, based on SENSOR_FW_HARDWARE.
+# At most one of these blocks runs, based on SENSOR_FW_HARDWARE.
 # Either way, HARDWARE_TRANSPORT_LIBRARY ends up set to whichever
 # target was actually built, so anything further down (or a top-level
 # project) can write target_link_libraries(app PUBLIC
@@ -221,6 +226,48 @@ elseif(SENSOR_FW_HARDWARE STREQUAL "ARDUINO")
 
     set(HARDWARE_TRANSPORT_LIBRARY ArduinoTransportLibrary)
 
+elseif(SENSOR_FW_HARDWARE STREQUAL "RP2040")
+
+    # The Pico SDK's own CMake supplies the hardware_* and pico_sync
+    # targets, so this has to be added from a project that has already
+    # included pico_sdk_import.cmake and called pico_sdk_init().
+    if(NOT COMMAND pico_sdk_init)
+        message(FATAL_ERROR
+            "SENSOR_FW_HARDWARE=RP2040 needs the Pico SDK: add itransport from a project that "
+            "includes pico_sdk_import.cmake and calls pico_sdk_init() first.")
+    endif()
+
+    # PicoI2CTransport: an interrupt-driven state machine on the I2C
+    # controller's FIFOs. PicoSPITransport: two DMA channels a transfer,
+    # finished by the DMA interrupt, with a GPIO chip-select.
+    # PicoUartTransport: the iTransport byte stream, received from the
+    # UART interrupt and sent by DMA. Each installs its own interrupt
+    # handler (shared), so unlike STM32 there is no callbacks file for
+    # the application to add. PicoSyncTransport<TBus> optionally locks
+    # a bus with a mutex_t for use from both cores.
+    add_library(PicoTransportLibrary STATIC
+        hw/rp2040/inc/PicoSyncTransport.h
+        hw/rp2040/inc/PicoI2CTransport.h
+        hw/rp2040/src/PicoI2CTransport.cpp
+        hw/rp2040/inc/PicoSPITransport.h
+        hw/rp2040/src/PicoSPITransport.cpp
+        hw/rp2040/inc/PicoUartTransport.h
+        hw/rp2040/src/PicoUartTransport.cpp
+    )
+
+    target_include_directories(PicoTransportLibrary PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/rp2040/inc
+    )
+
+    target_compile_features(PicoTransportLibrary PUBLIC cxx_std_17)
+
+    set_target_properties(PicoTransportLibrary PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${ITRANSPORT_LIB_DIR})
+
+    target_link_libraries(PicoTransportLibrary PUBLIC
+        sensor_transport hardware_i2c hardware_spi hardware_uart hardware_dma hardware_irq hardware_gpio pico_sync)
+
+    set(HARDWARE_TRANSPORT_LIBRARY PicoTransportLibrary)
+
 endif()
 
 # Visible to whichever project add_subdirectory()'d this one.
@@ -329,4 +376,21 @@ if(SENSOR_FW_BUILD_TESTS)
     )
     target_link_libraries(stm32_rtc_clock_test PRIVATE sensor_transport)
     add_test(NAME stm32_rtc_clock_test COMMAND stm32_rtc_clock_test)
+
+    # The real Pico transports against a simulation of the RP2040's I2C
+    # controller, SPI, UART and DMA, behind stand-in Pico SDK headers
+    # (test/rp2040/sim/).
+    add_executable(pico_transport_test
+        test/rp2040/pico_transport_test.cpp
+        test/rp2040/sim/pico_sim.cpp
+        hw/rp2040/src/PicoI2CTransport.cpp
+        hw/rp2040/src/PicoSPITransport.cpp
+        hw/rp2040/src/PicoUartTransport.cpp
+    )
+    target_include_directories(pico_transport_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/rp2040/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/rp2040/inc
+    )
+    target_link_libraries(pico_transport_test PRIVATE sensor_transport)
+    add_test(NAME pico_transport_test COMMAND pico_transport_test)
 endif()

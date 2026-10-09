@@ -51,6 +51,18 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
   HAL's weak ones, so they must be compiled into the application, never
   pulled from a static library. The STM32 headers include the
   application's CubeMX `main.h`.
+- `hw/rp2040/` (Raspberry Pi Pico, Pico SDK, no RTOS needed):
+  `PicoI2CTransport` (an interrupt-driven state machine on the I2C
+  controller's 16 entry FIFOs: register byte, repeated start, reads,
+  NACK through TX_ABRT, finished on STOP_DET), `PicoSPITransport` (two
+  DMA channels a transfer, finished by the DMA interrupt, GPIO
+  chip-select), `PicoUartTransport` (the `iTransport` stream: RX from
+  the UART interrupt, TX by DMA). Each installs its own shared
+  interrupt handler, so there is no callbacks file. `PicoSyncTransport<TBus>`
+  takes an optional `mutex_t*` for a bus used from both cores, tried
+  but never waited on. Host test `test/rp2040/pico_transport_test.cpp`
+  runs them over a simulation of the RP2040 peripherals behind
+  stand-in Pico SDK headers (`test/rp2040/sim/`).
 
 ### isensor drivers
 `aht20 bme280 bmp280 DS18B20 HMC6352 htu21df lps35hw lsm303dlhc mmc56x3
@@ -211,18 +223,20 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
 ```
 
-Last known results: isensor 19 tests (its 13 drivers plus itransport's
-tests), iTransport 6, iNetTransport 27 (with LWIP_DIR, MBEDTLS_DIR,
+Last known results: isensor 20 tests (its 13 drivers plus itransport's
+tests), iTransport 7, iNetTransport 23 without the optional source
+trees (27 before the RP2040 test, with LWIP_DIR, MBEDTLS_DIR,
 LITTLEFS_DIR and FATFS_DIR),
 PLCTransport 3 (with MBEDTLS_DIR),
-iDisplay 9 (ssd1306_test,
-hd44780_test, gui_test and itransport's 6), iRadio 9 (davis_test,
-davis_rfm69_test, xdavis_rfm69_test and itransport's 6), all passing. Each test file also
+iDisplay 10 (ssd1306_test,
+hd44780_test, gui_test and itransport's 7), iRadio 10 (davis_test,
+davis_rfm69_test, xdavis_rfm69_test and itransport's 7), all passing. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
 `STM32_HAL_INCLUDE_DIR`, `STM32_PROJECT_INCLUDE_DIR`), `ARDUINO`
-(`ARDUINO_CORE_INCLUDE_DIR`) or `HOST`. `isensor`, `iNetTransport` and
+(`ARDUINO_CORE_INCLUDE_DIR`), `RP2040` (from a Pico SDK project, after
+`pico_sdk_init()`; builds `PicoTransportLibrary`) or `HOST`. `isensor`, `iNetTransport` and
 `safeTransport` find itransport through `ITRANSPORT_DIR` (default
 `../iTransport/itransport`). PLCTransport options:
 `PLC_MUTEX_USE_CMSIS_RTOS2` (no `std::mutex` on the STM32 toolchain),
@@ -231,6 +245,15 @@ has a one-line `g++` build command in its header.
 For ARM checks, an xPack `arm-none-eabi-gcc` can be downloaded from
 GitHub releases; compile with the CubeIDE flags above plus
 `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb`.
+
+For RP2040 checks, clone the Pico SDK (`git clone --depth 1 --branch
+2.1.1 https://github.com/raspberrypi/pico-sdk`; no submodules needed)
+and build a small project that includes `pico_sdk_import.cmake`, calls
+`pico_sdk_init()`, sets `SENSOR_FW_HARDWARE=RP2040` and
+`ITRANSPORT_BUILD_WIRINGPI=OFF`, adds `isensor/` (which adds
+itransport), and links `PicoTransportLibrary` and the sensor targets:
+configure with `-DPICO_SDK_PATH=... -DPICO_BOARD=pico
+-DPICO_PLATFORM=rp2040` and the xPack toolchain on `PATH`.
 
 ## Related repository: cgriffis46/STM32_Static_Lib_Src
 

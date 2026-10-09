@@ -139,24 +139,31 @@ endif()
 # No CMSIS-RTOS dependency at all here: this is genuinely just POSIX
 # (pthread, nanosleep, std::atomic), needing only Threads::Threads to
 # link — unlike xbmp280_driver, this never needs CMSIS_RTOS_INCLUDE_DIR.
-add_library(pbmp280_driver STATIC
-    hw/linux/inc/pBMP280.h
-    hw/linux/src/pBMP280.cpp
-    hw/linux/inc/pSensorBase.h
-)
+# Built only where there are POSIX threads to link: a microcontroller
+# toolchain (STM32, RP2040) has none, and would otherwise stop the
+# whole of isensor from configuring.
+find_package(Threads QUIET)
+if(Threads_FOUND)
+    add_library(pbmp280_driver STATIC
+        hw/linux/inc/pBMP280.h
+        hw/linux/src/pBMP280.cpp
+        hw/linux/inc/pSensorBase.h
+    )
 
-target_include_directories(pbmp280_driver PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/hw/linux/inc
-)
+    target_include_directories(pbmp280_driver PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/hw/linux/inc
+    )
 
-target_compile_features(pbmp280_driver PUBLIC cxx_std_17)
+    target_compile_features(pbmp280_driver PUBLIC cxx_std_17)
 
-set_target_properties(pbmp280_driver PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${ISENSOR_LIB_DIR})
+    set_target_properties(pbmp280_driver PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${ISENSOR_LIB_DIR})
 
-find_package(Threads REQUIRED)
-target_link_libraries(pbmp280_driver PUBLIC Threads::Threads)
+    target_link_libraries(pbmp280_driver PUBLIC Threads::Threads)
 
-target_link_libraries(pbmp280_driver PUBLIC bmp280_driver)
+    target_link_libraries(pbmp280_driver PUBLIC bmp280_driver)
+else()
+    message(STATUS "No POSIX threads for this target: pbmp280_driver is not built")
+endif()
 
 # --- Sensor drivers --------------------------------------------------------
 # One folder each, with its own CMakeLists.txt defining <name>_sensor.

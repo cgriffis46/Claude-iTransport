@@ -44,6 +44,11 @@ pull request, newest first.
     and once as an RP2350. ([#19](https://github.com/cgriffis46/Claude-iTransport/pull/19))
 
 #### Changed
+- `README.md` rewritten: what iTransport is and why it helps (one driver
+  across buses and boards, non-blocking transfers, shared-bus
+  arbitration, small porting surface, failure handling, host testing),
+  the interfaces and platforms, the modules built on it, how a driver is
+  written, how to build and test, and that nothing has run on hardware. ([#21](https://github.com/cgriffis46/Claude-iTransport/pull/21))
 - `CLAUDE.md` now carries the original sensor_fw design record: the
   working principles, the safeTransport and PLCTransport designs, the
   F207 safety relay's hardware and watchdog decisions, the CIP facts

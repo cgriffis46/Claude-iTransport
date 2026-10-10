@@ -57,6 +57,13 @@ public:
 	virtual uint32_t ticksPerSecond() const = 0;
 	// The highest power the radio can transmit, in dBm.
 	virtual int8_t maxPowerDbm() const = 0;
+	// Listening (RX continuous) and a packet is arriving: its header has
+	// been heard and it hasn't finished. For listen-before-talk. A radio
+	// that can't tell says false.
+	virtual bool channelBusy() const { return false; }
+	// Transfers are under way (starting up, configuring, reading a packet):
+	// call main() again at once rather than sleeping.
+	virtual bool busy() const { return false; }
 };
 
 } // namespace lora

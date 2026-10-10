@@ -13,8 +13,12 @@
 #   rfm95/              rfm95: the HopeRF RFM95W / Semtech SX1276 LoRa radio,
 #                       a class template over its transport (header only),
 #                       xrfm95 (CMSIS-RTOS2), SX1276Regs.h and LoRaPhy.h
-#   lorawan/            lorawan_crypto: AES-128 and AES-CMAC (header only);
-#                       lorawan: the LoRaWAN 1.0.4 Class A MAC (LoRaWanMac),
+#   crypto/             radio_crypto: AES-128 (both ways), AES-CMAC, SHA-256 and
+#                       HMAC-SHA256 (header only)
+#   third_party/        monocypher: Monocypher 4.0.2 (C, BSD-2 / CC0), for Ed25519
+#   meshcore/           meshcore: MeshCore packets, channels, adverts and a node
+#                       over iLoRaRadio (Node), and xMeshNode.h (CMSIS-RTOS2 loop)
+#   lorawan/            lorawan: the LoRaWAN 1.0.4 Class A MAC (LoRaWanMac),
 #                       its frames (LoRaWanFrame) and regions (RegionUS915),
 #                       and xLoRaWanMac.h, its CMSIS-RTOS2 loop (header)
 #   test/               host tests and simulations (an RFM69, ISS stations,
@@ -32,7 +36,7 @@
 #   ctest --test-dir build
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     cmake_minimum_required(VERSION 3.16)
-    project(iradio LANGUAGES CXX)
+    project(iradio LANGUAGES C CXX)
 
     option(SENSOR_FW_BUILD_TESTS "Build the host tests (no hardware, HAL or RTOS needed)" OFF)
     if(SENSOR_FW_BUILD_TESTS)
@@ -95,10 +99,36 @@ add_library(rfm95 INTERFACE)
 target_include_directories(rfm95 INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/rfm95/inc)
 target_link_libraries(rfm95 INTERFACE sensor_transport sensor_state_machine)
 
-# --- lorawan_crypto (header only) ---------------------------------------------------
-add_library(lorawan_crypto INTERFACE)
-target_include_directories(lorawan_crypto INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/lorawan/inc)
-target_compile_features(lorawan_crypto INTERFACE cxx_std_17)
+# --- radio_crypto (header only) -----------------------------------------------------
+add_library(radio_crypto INTERFACE)
+target_include_directories(radio_crypto INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/crypto/inc)
+target_compile_features(radio_crypto INTERFACE cxx_std_17)
+
+# --- monocypher (vendored C) ---------------------------------------------------------
+enable_language(C)
+add_library(monocypher STATIC
+    third_party/monocypher/monocypher.c
+    third_party/monocypher/monocypher-ed25519.c
+)
+target_include_directories(monocypher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher)
+set_target_properties(monocypher PROPERTIES C_STANDARD 99 ARCHIVE_OUTPUT_DIRECTORY ${IRADIO_LIB_DIR})
+
+# --- meshcore ---------------------------------------------------------------------------
+add_library(meshcore STATIC
+    meshcore/inc/MeshPacket.h
+    meshcore/inc/MeshCrypto.h
+    meshcore/inc/MeshIdentity.h
+    meshcore/inc/MeshMessages.h
+    meshcore/inc/MeshNode.h
+    meshcore/src/MeshPacket.cpp
+    meshcore/src/MeshCrypto.cpp
+    meshcore/src/MeshIdentity.cpp
+    meshcore/src/MeshMessages.cpp
+    meshcore/src/MeshNode.cpp
+)
+target_include_directories(meshcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/meshcore/inc)
+target_link_libraries(meshcore PUBLIC radio_crypto monocypher rfm95)
+set_target_properties(meshcore PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${IRADIO_LIB_DIR})
 
 # --- lorawan -------------------------------------------------------------------------
 add_library(lorawan STATIC
@@ -110,7 +140,8 @@ add_library(lorawan STATIC
     lorawan/src/RegionUS915.cpp
     lorawan/src/LoRaWanMac.cpp
 )
-target_link_libraries(lorawan PUBLIC lorawan_crypto rfm95)
+target_include_directories(lorawan PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lorawan/inc)
+target_link_libraries(lorawan PUBLIC radio_crypto rfm95)
 set_target_properties(lorawan PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${IRADIO_LIB_DIR})
 
 # --- Host tests ------------------------------------------------------------------
@@ -136,7 +167,7 @@ if(SENSOR_FW_BUILD_TESTS)
     add_test(NAME xdavis_rfm69_test COMMAND xdavis_rfm69_test)
 
     add_executable(aes_cmac_test test/aes_cmac_test.cpp)
-    target_link_libraries(aes_cmac_test PRIVATE lorawan_crypto)
+    target_link_libraries(aes_cmac_test PRIVATE radio_crypto)
     add_test(NAME aes_cmac_test COMMAND aes_cmac_test)
 
     # test/stub's cmsis_os2.h runs xrfm95's sleep and wake single threaded.
@@ -161,4 +192,21 @@ if(SENSOR_FW_BUILD_TESTS)
     )
     target_link_libraries(lorawan_mac_test PRIVATE lorawan)
     add_test(NAME lorawan_mac_test COMMAND lorawan_mac_test)
+
+    add_executable(meshcore_crypto_test test/meshcore_crypto_test.cpp)
+    target_link_libraries(meshcore_crypto_test PRIVATE meshcore)
+    add_test(NAME meshcore_crypto_test COMMAND meshcore_crypto_test)
+
+    add_executable(meshcore_packet_test test/meshcore_packet_test.cpp)
+    target_link_libraries(meshcore_packet_test PRIVATE meshcore)
+    add_test(NAME meshcore_packet_test COMMAND meshcore_packet_test)
+
+    # Nodes, a repeater and MeshCore-made packets on one simulated air.
+    add_executable(meshcore_node_test test/meshcore_node_test.cpp)
+    target_include_directories(meshcore_node_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+    )
+    target_link_libraries(meshcore_node_test PRIVATE meshcore)
+    add_test(NAME meshcore_node_test COMMAND meshcore_node_test)
 endif()

@@ -10,6 +10,17 @@ pull request, newest first.
 ### 2026-10-10
 
 #### Added
+- A MeshCore node on the RFM95 in `iRadio/meshcore`: `meshcore::Node`
+  over any `iLoRaRadio` hears and verifies adverts, reads group channels
+  (text and data) and sends its own adverts and group packets by flood,
+  with MeshCore's airtime budget and listen-before-talk; `MeshPacket`,
+  `MeshCrypto`, `MeshIdentity` (Ed25519), `MeshMessages` and `xMeshNode`
+  (CMSIS-RTOS2 loop). Checked against MeshCore's own code built on a PC.
+- `iRadio/crypto`: `Sha256` and `HmacSha256`, and AES-128 decryption.
+- `iRadio/third_party/monocypher`: Monocypher 4.0.2, vendored for Ed25519.
+- `iLoRaRadio::channelBusy()` and `busy()`, implemented by `rfm95`.
+- Tests `meshcore_crypto_test`, `meshcore_packet_test` and
+  `meshcore_node_test`; `rfm95_test` covers the two new queries.
 - A LoRaWAN 1.0.4 Class A end device in `iRadio/lorawan` (US915, The
   Things Network) ([#26](https://github.com/cgriffis46/Claude-iTransport/pull/26)):
   - `lorawan::Mac`: OTAA join (DevNonce saved before each request,
@@ -85,6 +96,11 @@ pull request, newest first.
     receiver).
 
 #### Changed
+- `Aes128.h` and `AesCmac.h` moved from `iRadio/lorawan/inc` to
+  `iRadio/crypto/inc`; the CMake target `lorawan_crypto` is now
+  `radio_crypto`.
+- The SX1276 simulator raises ValidHeader while a packet arrives and
+  takes radio ranges (`Air::inRange`).
 - `NmeaParser` moved from `isensor/ublox_gps` to `isensor/nmea`, shared
   by both GNSS drivers, with `ByteRing` (the interrupt-to-thread ring,
   taken out of `ublox_gps`) and its own test. It now gives a

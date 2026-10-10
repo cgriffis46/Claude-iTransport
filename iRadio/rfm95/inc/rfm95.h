@@ -57,6 +57,7 @@
 #include "iClock.h"
 #include "SX1276Regs.h"
 #include "LoRaPhy.h"
+#include "iLoRaRadio.h"
 
 typedef enum rfm95_state_t {
 	rfm95_init = 0,
@@ -98,21 +99,15 @@ inline rfm95_param_t rfm95_default_param() {
 	return p;
 }
 
-typedef enum rfm95_event_kind_t {
-	rfm95_ev_tx_done,
-	rfm95_ev_rx_done,        // a packet, with its RSSI and SNR
-	rfm95_ev_rx_timeout,     // RX single: nothing within the symbols asked for
-	rfm95_ev_crc_error,      // a packet whose payload CRC failed (not delivered)
-	rfm95_ev_fault           // the radio stopped answering, or a TX never finished
-} rfm95_event_kind_t;
-
-typedef struct rfm95_event_t {
-	rfm95_event_kind_t kind;
-	uint32_t ticks;          // when: the clock's ticks, or ms without a clock
-	int16_t  rssiDbm;        // rx_done
-	int8_t   snrDb;          // rx_done
-	uint8_t  len;            // rx_done: bytes in the packet
-} rfm95_event_t;
+// The events are iLoRaRadio's (lora::Event); these are their names here.
+// ticks is the clock's ticks, or ms without a clock.
+typedef lora::EventKind rfm95_event_kind_t;
+typedef lora::Event rfm95_event_t;
+static constexpr lora::EventKind rfm95_ev_tx_done    = lora::ev_tx_done;
+static constexpr lora::EventKind rfm95_ev_rx_done    = lora::ev_rx_done;
+static constexpr lora::EventKind rfm95_ev_rx_timeout = lora::ev_rx_timeout;
+static constexpr lora::EventKind rfm95_ev_crc_error  = lora::ev_crc_error;
+static constexpr lora::EventKind rfm95_ev_fault      = lora::ev_fault;
 
 typedef struct rfm95_stats_t {
 	uint32_t txDone, rxDone, rxTimeouts, crcErrors;
@@ -121,7 +116,7 @@ typedef struct rfm95_stats_t {
 } rfm95_stats_t;
 
 template <typename TTransport>
-class rfm95 : public SensorStateMachine<TTransport, rfm95_state_t> {
+class rfm95 : public SensorStateMachine<TTransport, rfm95_state_t>, public lora::iLoRaRadio {
 	static_assert(std::is_base_of<ISensorTransport, TTransport>::value,
 		"rfm95 needs an ISensorTransport (SPITransport, ...)");
 	using Base = SensorStateMachine<TTransport, rfm95_state_t>;
@@ -130,7 +125,7 @@ public:
 	static constexpr uint32_t kBusTimeoutMs = 100;
 	static constexpr uint32_t kErrorBackoffMs = 1000;
 	static constexpr uint32_t kTxMarginMs = 200;     // beyond the time on air, before a TX counts as stuck
-	static constexpr uint32_t kRxMarginMs = 100;     // the same for an RX single's symbol timeout
+	static constexpr uint32_t kRxMarginMs = 100;     // the same for an RX single (its symbol timeout and a 255 byte packet)
 	static constexpr uint32_t kIdleSleepMs = 100;
 	static constexpr uint8_t  kMaxPayload = 255;
 	static constexpr uint8_t  kEvents = 2;
@@ -138,7 +133,7 @@ public:
 	template <typename... TArgs>
 	explicit rfm95(const rfm95_param_t& param, TArgs&&... transportArgs);
 
-	void main(uint32_t nowMs);
+	void main(uint32_t nowMs) override;
 
 	// Requests. False if the radio is busy (still starting, transmitting,
 	// in an RX single, in the error state, or a request is already
@@ -146,21 +141,21 @@ public:
 	// (it ends the listening; a packet being read out is finished first).
 	// The payload is copied. A receive with timeoutSymbols 0 runs until
 	// standby() or another request.
-	bool transmit(const lora::Config& cfg, const uint8_t* data, uint8_t len);
-	bool receive(const lora::Config& cfg, uint16_t timeoutSymbols);
+	bool transmit(const lora::Config& cfg, const uint8_t* data, uint8_t len) override;
+	bool receive(const lora::Config& cfg, uint16_t timeoutSymbols) override;
 	// Ends RX continuous; the radio waits in standby. False if not receiving.
-	bool standby();
+	bool standby() override;
 	// Sleep (lowest power, the FIFO is lost) until the next request.
-	bool powerDown();
+	bool powerDown() override;
 
 	bool ready() const { return this->_state == rfm95_idle && _req == Req::None; }
 	// ready(), or listening in RX continuous: a request will be taken.
-	bool accepting() const { return _req == Req::None && (this->_state == rfm95_idle || receivingContinuous()); }
+	bool accepting() const override { return _req == Req::None && (this->_state == rfm95_idle || receivingContinuous()); }
 	bool receivingContinuous() const { return _rxContinuous && this->_state >= rfm95_rx_wait && this->_state < rfm95_error; }
 
 	// The next event, oldest first; the packet (rx_done) goes into buf, up
 	// to cap bytes. False when there is none.
-	bool takeEvent(rfm95_event_t* e, uint8_t* buf, uint8_t cap);
+	bool takeEvent(rfm95_event_t* e, uint8_t* buf, uint8_t cap) override;
 
 	// From DIO0's / DIO1's rising edge. Safe in an interrupt (iClock::now() is).
 	void onDio0(uint32_t nowMs) { stampIrq(nowMs); }
@@ -168,7 +163,9 @@ public:
 
 	// Time events by this clock instead of nowMs. Set before the first request.
 	void setClock(iClock* clock) { _clock = clock; }
-	uint32_t ticksPerSecond() const { return _clock ? _clock->ticksPerSecond() : 1000u; }
+	uint32_t ticksPerSecond() const override { return _clock ? _clock->ticksPerSecond() : 1000u; }
+	uint32_t now(uint32_t nowMs) const override { return nowTicks(nowMs); }
+	int8_t maxPowerDbm() const override { return _param.maxPowerDbm < 20 ? _param.maxPowerDbm : 20; }
 
 	const rfm95_stats_t& stats() const { return _st; }
 

@@ -7,8 +7,10 @@
  * faked, which checks the write-high address bit).
  *
  * A transmission takes its time on air (LoRaPhy's formula). Another
- * radio receives it only if it was already in RX when the packet began,
- * and stays in RX without retuning until it ends, with the same
+ * radio receives it if it was in RX when the packet began, or entered RX
+ * while enough of the preamble was left to lock on (kLockSymbols of the
+ * preamble's 8 + 4.25 symbols: an approximation of the SX1276, the same
+ * minimum LoRaMac-node assumes), and stays in RX without retuning until it ends, with the same
  * frequency, bandwidth, spreading factor, low data rate setting and sync
  * word, and the matching I/Q polarity (the transmitter's TX inversion is
  * the receiver's RX inversion, with RegInvertIq2 set to match). An RX
@@ -98,8 +100,27 @@ struct Air {
 	std::vector<Sx1276*> radios;
 	struct OnAir { Sx1276* from; Sx1276::Sent p; std::vector<Sx1276*> listeners; };
 	std::vector<OnAir> flying;
+	// A gateway: hears every packet whole when it ends, whatever its
+	// channel or spreading factor (it filters for itself), collisions aside.
+	std::function<void(const Sx1276& from, const Sx1276::Sent& p)> sniff;
 
 	void add(Sx1276& r) { radios.push_back(&r); r.air = this; }
+
+	static constexpr uint32_t kLockSymbols = 6;   // of preamble a receiver needs to lock on
+	// A radio just entered RX: a packet already under way can still be
+	// caught while kLockSymbols of its preamble (programmed + 4.25) are left.
+	void catchUp(Sx1276& r) {
+		for (OnAir& a : flying) {
+			if (a.from == &r || !matches(*a.from, a.p, r) || r.incoming.on) continue;
+			const uint32_t symUs = lora::symbolUs(a.p.sf, (lora::Bw)a.p.bw);
+			const uint32_t lateUs = (uint32_t)((uint64_t)symUs * (8 * 4 + 17 - 4 * kLockSymbols) / 4);   // (8 + 4.25 - 6) symbols
+			if ((r.now - a.p.start) * 1000u > lateUs) continue;
+			r.incoming.on = true;
+			r.incoming.gen = r.gen;
+			r.incoming.collided = false;
+			a.listeners.push_back(&r);
+		}
+	}
 
 	bool matches(const Sx1276& tx, const Sx1276::Sent& p, const Sx1276& rx) const {
 		return rx.inRx() && rx.freqHz() == p.freqHz && rx.sf() == p.sf && rx.bw() == p.bw &&
@@ -123,6 +144,7 @@ struct Air {
 		for (Sx1276* r : radios) r->now = now;   // a delivery's DIO0 is stamped with this ms
 		for (size_t i = 0; i < flying.size();) {
 			if ((int32_t)(now - flying[i].p.end) < 0) { ++i; continue; }
+			if (sniff) sniff(*flying[i].from, flying[i].p);
 			for (Sx1276* r : flying[i].listeners) {
 				if (r->incoming.on && r->incoming.gen == r->gen && !r->incoming.collided && r->inRx()) r->deliver(flying[i].p);
 				r->incoming.on = false;
@@ -164,6 +186,7 @@ inline void Sx1276::write(uint8_t r, uint8_t v) {
 		} else if (mode() == kOpRxSingle || mode() == kOpRxContinuous) {
 			rxSince = now;
 			rxWriteAddr = reg[kRegFifoRxBaseAddr];
+			if (air) air->catchUp(*this);
 		}
 		return;
 	}

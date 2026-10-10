@@ -53,7 +53,7 @@ iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
 iRadio/                  radios: the Davis ISS receiver on an RFM69, with
                          a FreeRTOS task (queues, stream buffer); the
-                         RFM95 (SX1276) LoRa radio; LoRaWAN (AES/CMAC so far)
+                         RFM95 (SX1276) LoRa radio; a LoRaWAN Class A MAC
 safeTransport/           safety: Safe interface, devices, zones, relays, CAN,
                          CIP Safety placeholders, events
 ```
@@ -234,17 +234,41 @@ GNSS receivers on a UART (`iTransport`): `nmea/` holds what they share,
   negative), SNR raw/4): values from Semtech's LoRaMac-node, checked
   against arduino-LoRa, not against the datasheet. DetectOptimize and
   DetectionThreshold are left at reset (their upper bits unverified).
-- `lorawan/` (header only, `lorawan_crypto`): `Aes128` (encrypt only;
-  LoRaWAN needs nothing else) and `AesCmac` (RFC 4493). Table based, not
-  hardened against side channels. Next: the LoRaWAN 1.0.4 Class A MAC
-  for US915 and The Things Network (OTAA, frame counters, RX1/RX2,
-  DevNonce kept across resets), written here, not LMIC/LoRaMac-node.
+  `rfm95` implements `lora::iLoRaRadio` (`rfm95/inc/iLoRaRadio.h`: the
+  radio as the MAC sees it, `lora::Event`; `rfm95_event_t` and
+  `rfm95_ev_*` are its names for them). An RX single's safety deadline
+  allows for a 255 byte packet that began inside the window.
+- `lorawan/`: `Aes128` (encrypt only; LoRaWAN needs nothing else) and
+  `AesCmac` (RFC 4493), header only (`lorawan_crypto`), table based, not
+  hardened against side channels. The `lorawan` library: `LoRaWanFrame`
+  (1.0.x frames, keys, MIC, payload crypto; pure functions, checked
+  against the lora-packet npm library), `Region` (what differs per
+  region) and `RegionUS915` (subBand 2 = TTN; tables and LinkADRReq rules
+  from LoRaMac-node v4.7.0), and `Mac`: LoRaWAN 1.0.4 Class A, OTAA,
+  written here (not LMIC/LoRaMac-node). Injected: an `iLoRaRadio`, a
+  `Region`, an `iSessionStore` (91 byte record with DevEUI and CRC).
+  DevNonce saved before each join request (save fails: not sent);
+  JoinNonce must increase; FCntUp saved ahead in `saveEvery` steps;
+  FCntDown 32-bit and increasing. RX windows from the TxDone stamp with
+  LoRaMac-node's `ComputeRxWindowParameters` (`Mac::rxWindow`); join
+  backoff 1%/0.1%/0.01% (RP002); confirmed retries after RX2 + 1-3 s;
+  ADR backoff (64/32, LoRaMacAdrCalcNext); sticky answers for
+  RXParamSetup/RXTimingSetup; LinkADRReq blocks answered once each;
+  NewChannel/DlChannel/TxParamSetup skipped without an answer.
+  `main()` runs the radio too (one thread); `sleepHintMs()` and
+  `xLoRaWanMac` (CMSIS-RTOS2, flag 0x08000000, `wakeFromIsr()` after the
+  radio's `onDio0()`) sleep exactly as long as allowed. `Mac` 1.4 KB RAM.
   MeshCore is a separate mesh protocol on the same radio, not LoRaWAN.
 - `test/sim/SimSX1276.h`: SX1276s at register level sharing an `Air`
   (frequency, SF, BW, LDRO, sync word and I/Q must match; collisions;
   the LoRa bit only changes in sleep; RX single symbol timeouts; DIO0/1;
-  faults: absent, stuck, refused, broken TX, corrupt CRC).
-  `rfm95_test` (153 checks) and `aes_cmac_test` (FIPS-197, RFC 4493).
+  faults: absent, stuck, refused, broken TX, corrupt CRC; a radio entering
+  RX may still lock onto a preamble with 6 symbols left), and a `sniff`
+  hook for a gateway. `test/sim/SimLoRaWanServer.h`: a TTN gateway and
+  network server for one device on sub-band 2, with its own US915 numbers
+  and its own AES inverse cipher (join accepts are made by decrypting).
+  `rfm95_test` (157 checks), `aes_cmac_test` (FIPS-197, RFC 4493),
+  `lorawan_frame_test` (124), `lorawan_mac_test` (318).
 
 ### safeTransport (flat folder, builds on HOST; one test so far)
 ```
@@ -557,7 +581,7 @@ cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON \
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # ssd1306_test, gui_test
 cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
-      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis, rfm95, aes_cmac tests
+      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis, rfm95, aes_cmac, lorawan tests
 ```
 
 Last known results: isensor 25 tests (its 15 drivers plus nmea_parser_test, plus itransport's
@@ -567,9 +591,9 @@ LITTLEFS_DIR and FATFS_DIR),
 PLCTransport 3 (with MBEDTLS_DIR), safeTransport 10
 (dual_channel_link_test and itransport's 9),
 iDisplay 12 (ssd1306_test,
-hd44780_test, gui_test and itransport's 9), iRadio 14 (davis_test,
-davis_rfm69_test, xdavis_rfm69_test, aes_cmac_test, rfm95_test and
-itransport's 9), all passing,
+hd44780_test, gui_test and itransport's 9), iRadio 16 (davis_test,
+davis_rfm69_test, xdavis_rfm69_test, aes_cmac_test, rfm95_test,
+lorawan_frame_test, lorawan_mac_test and itransport's 9), all passing,
 at ITRANSPORT_DEBUG 0 and 3. `python3 tools/saleae/test_saleae_log.py`: 5. Each test file also
 has a one-line `g++` build command in its header.
 
@@ -725,6 +749,9 @@ STM32L432KC (L4).
 28. The RFM95 (SX1276) LoRa radio driver in iRadio, with a simulated
     air of SX1276s, and AES-128/AES-CMAC for the LoRaWAN MAC to come
     (US915, The Things Network, written in-house).
+29. The LoRaWAN 1.0.4 Class A MAC (`lorawan::Mac`, `RegionUS915`,
+    `LoRaWanFrame`, `xLoRaWanMac`), tested against a simulated TTN
+    gateway and network server.
 
 ## Open items
 
@@ -802,8 +829,17 @@ STM32L432KC (L4).
 - `rfm95`: not run against an RFM95; register values not checked
   against Semtech's datasheet (LoRaMac-node and arduino-LoRa agree).
   No FSK mode, no channel activity detection (CAD), no frequency hopping
-  (FHSS), no RFO output (the RFM95W only brings out PA_BOOST). The
-  LoRaWAN MAC is not written yet.
+  (FHSS), no RFO output (the RFM95W only brings out PA_BOOST).
+- LoRaWAN: never joined a real network; only the simulated server.
+  Frames checked against lora-packet, timing and rules against
+  LoRaMac-node's code, not against the LoRaWAN or RP002 documents
+  themselves (not downloaded here). US915 only; no Class B/C, ABP, 1.1,
+  rejoin. The session store holds the keys in the clear. FCntDown can
+  lag by the downlinks since the last save (a replay of those would be
+  accepted after a reset). MAC answers that don't fit wait for the next
+  uplink (the application sends one). No RTC-backed GPS time from
+  DeviceTimeAns yet (the event carries it). Not in the STM32_Static_Lib_Src
+  sync yet.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;
   the files it names are already gone.
 - `safeTransport/sensor_fw.zip` and its `*.html` files are old reference

@@ -201,7 +201,10 @@ void rfm95<TTransport>::startRequest(uint32_t nowMs) {
 		op(kRegIrqFlags, kIrqAll);
 		op(kRegOpMode, kOpLoRa | (_rxContinuous ? kOpRxContinuous : kOpRxSingle));
 		if (!_rxContinuous) {
-			_deadlineMs = (uint32_t)(((uint64_t)lora::symbolUs(_cfg.sf, _cfg.bw) * _rxSymbols) / 1000u) + kRxMarginMs;
+			// A packet that begins inside the window is received whole, however
+			// long after the window it ends: allow for the longest one.
+			_deadlineMs = (uint32_t)(((uint64_t)lora::symbolUs(_cfg.sf, _cfg.bw) * _rxSymbols) / 1000u) +
+			              lora::timeOnAirUs(_cfg, kMaxPayload) / 1000u + kRxMarginMs;
 		}
 		DBG_EVENT("rfm95", "rx", (int32_t)(_cfg.freqHz / 1000u), _cfg.sf, (int32_t)_cfg.bw, _rxSymbols, _cfg.invertIq ? 1 : 0);
 		_req = Req::None;

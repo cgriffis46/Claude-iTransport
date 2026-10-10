@@ -336,6 +336,16 @@ static void testRxSingleTimeoutAndCrc() {
 	w.run(150);
 	CHECK(b.drv->takeEvent(&e, buf, sizeof buf) && e.kind == rfm95_ev_rx_done && e.len == 20);
 	CHECK(b.drv->ready());
+	// The same with a long packet: 200 bytes at SF10 are 1.6 s on the air,
+	// far beyond the 8-symbol window (no "stuck" fault halfway through).
+	std::vector<uint8_t> longMsg(200, 0x3C);
+	uint8_t big[255];
+	CHECK(b.drv->receive(cfg915(10), 8));
+	w.run(2);
+	CHECK(a.drv->transmit(cfg915(10), longMsg.data(), 200));
+	w.run(2000);
+	CHECK(b.drv->takeEvent(&e, big, sizeof big) && e.kind == rfm95_ev_rx_done && e.len == 200);
+	CHECK(b.drv->stats().faults == 0 && b.drv->ready());
 	// A bad CRC: reported, not delivered.
 	b.chip.corruptNext = 1;
 	CHECK(b.drv->receive(cfg915(), 30));

@@ -10,6 +10,21 @@ pull request, newest first.
 ### 2026-10-10
 
 #### Added
+- A LoRaWAN 1.0.4 Class A end device in `iRadio/lorawan` (US915, The
+  Things Network):
+  - `lorawan::Mac`: OTAA join (DevNonce saved before each request,
+    JoinNonce checked, RP002 join backoff), unconfirmed and confirmed
+    uplinks, downlinks in RX1 and RX2 timed from the TxDone interrupt,
+    32-bit frame counters, the MAC commands (LinkADR, DutyCycle,
+    RXParamSetup, DevStatus, RXTimingSetup, LinkCheck, DeviceTime) and
+    ADR with its backoff. The session is kept in an `iSessionStore` the
+    application provides.
+  - `LoRaWanFrame` (frames, keys, MIC, encryption), `Region` and
+    `RegionUS915` (sub-band 2 for TTN), `xLoRaWanMac` (the CMSIS-RTOS2
+    loop), and `lora::iLoRaRadio`, which `rfm95` now implements.
+  - Tests `lorawan_frame_test` (against the lora-packet library and
+    LoRaMac-node's formulas) and `lorawan_mac_test` (a simulated TTN
+    gateway and network server).
 - An RFM95W / SX1276 LoRa radio driver and the AES used by LoRaWAN, in
   `iRadio` ([#25](https://github.com/cgriffis46/Claude-iTransport/pull/25)):
   - `rfm95/`: `rfm95<TTransport>` (non-blocking, header only) and
@@ -77,6 +92,11 @@ pull request, newest first.
   `ublox_gps_test` took over the UBX framing tests.
 - `CLAUDE.md`: `ublox_gps` is now in STM32_Static_Lib_Src's sync script
   and its iSensor projects' include paths, so that open item is gone. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
+
+#### Fixed
+- `rfm95`: an RX single gave up as "stuck" on a packet that began inside
+  its window but lasted more than 100 ms past it (a join accept at SF12
+  is 412 ms); the deadline now allows for a 255 byte packet.
 
 ### 2026-10-09
 

@@ -10,6 +10,19 @@ pull request, newest first.
 ### 2026-10-10
 
 #### Added
+- An RFM95W / SX1276 LoRa radio driver and the AES used by LoRaWAN, in
+  `iRadio` ([#25](https://github.com/cgriffis46/Claude-iTransport/pull/25)):
+  - `rfm95/`: `rfm95<TTransport>` (non-blocking, header only) and
+    `xrfm95` (CMSIS-RTOS2): transmit, RX single (a symbol timeout) and
+    RX continuous, each request with its own frequency, spreading
+    factor, bandwidth, coding rate, I/Q inversion and power; events
+    stamped by the DIO interrupts in `iClock` ticks; faults and restart
+    on a stuck TX, RX or bus. `SX1276Regs.h` and `LoRaPhy.h` (FRF,
+    time on air, RSSI, SNR).
+  - `lorawan/`: `Aes128` and `AesCmac` (RFC 4493), for the LoRaWAN
+    Class A MAC that comes next.
+  - Tests `rfm95_test` (simulated SX1276s sharing an air) and
+    `aes_cmac_test` (FIPS-197 and RFC 4493 vectors).
 - A debug log and debug pins for testing on hardware with a logic
   analyser ([#24](https://github.com/cgriffis46/Claude-iTransport/pull/24)):
   - `iTransport/itransport/inc/DebugLog.h`: text lines with a sequence

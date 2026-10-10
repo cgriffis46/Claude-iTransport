@@ -7,6 +7,26 @@ pull request, newest first.
 
 ## Unreleased
 
+### 2026-10-10
+
+#### Added
+- `isensor/ublox_gps`: an NMEA 0183 parser and a u-blox GNSS receiver
+  driver on a UART.
+  - `NmeaParser`: byte at a time, checksum required, GGA, RMC, GLL, VTG,
+    GSA, GSV and ZDA from any talker, NMEA 4.10 fields, position in
+    1e-7 degrees with integer arithmetic, a sentence taken whole or
+    not at all, no heap and no `strtod`.
+  - `UbxProtocol.h`: UBX frames and checksum, ACK/NAK, and the
+    configuration messages: UBX-CFG-MSG and UBX-CFG-RATE for u-blox 6
+    to 8, UBX-CFG-VALSET for u-blox 9 and 10.
+  - `ublox_gps<TTransport>` and `xublox_gps` (CMSIS-RTOS2): the
+    interrupt fills a ring, `main()` parses; it chooses the sentences
+    and rate, waits for each ACK, reports a NAK or no answer and carries
+    on with the receiver's defaults, and invalidates the data and starts
+    again when the receiver falls silent.
+  - Host tests `nmea_parser_test` and `ublox_gps_test` (a simulated
+    receiver).
+
 ### 2026-10-09
 
 #### Added

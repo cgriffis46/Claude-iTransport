@@ -103,8 +103,35 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
 
 ### isensor drivers
 `aht20 bme280 bmp280 DS18B20 HMC6352 htu21df lps35hw lsm303dlhc mmc56x3
-mpl3115a2 PM25 sht31 si7021`, plus `SensorBase`/`BMP280Sensor` (the
-older style) and `SensorStateMachine`.
+mpl3115a2 PM25 sht31 si7021 ublox_gps`, plus `SensorBase`/`BMP280Sensor`
+(the older style) and `SensorStateMachine`.
+
+`ublox_gps/`: a u-blox GNSS receiver on a UART (`iTransport`).
+- `NmeaParser` (pure logic, header-only like the drivers): one character
+  at a time, checksum required, GGA RMC GLL VTG GSA GSV ZDA from any
+  talker (GP GL GA GB/BD GQ GI GN), NMEA 4.10 fields (RMC nav status,
+  GSA system ID, GSV signal ID). Position in 1e-7 degrees by integer
+  arithmetic (no float loss, no double); empty fields NAN or invalid. A
+  sentence is taken whole or not at all (fields before the satellites
+  saved and put back; GSV checks first). Up to 96 characters: u-blox's
+  high precision mode goes past NMEA's 82.
+- `UbxProtocol.h`: UBX frames, Fletcher checksum, ACK/NAK, `cfgMsg`,
+  `cfgRate` (u-blox 6-8) and `ValSet` (CFG-VALSET, RAM layer, u-blox
+  9-10). Numbers from Zephyr's and SparkFun's u-blox code, which agree;
+  u-blox's PDFs could not be downloaded here.
+- `ublox_gps<TTransport>`: the interrupt only fills a 512 byte SPSC
+  ring; `main()` splits UBX from NMEA and parses. `ublox_gps_param_t`
+  needs `ublox_config_t` (None, Legacy, ValSet): each CFG message waits
+  for its ACK (3 tries, 500 ms); NAK or no answer sets `configStatus()`
+  and it carries on with the receiver's defaults. Doesn't change the
+  baud rate. Silence for `silenceMs` fails (data invalid), then it
+  attaches and configures again. `xublox_gps` wakes on each line end
+  and every 64 bytes (an ACK has no newline, so the wait state sleeps
+  5 ms). About 1.2 KB of RAM an instance.
+- Tests: `nmea_parser_test` (published GGA `*47`/RMC `*6A` and the
+  quoted UBX "GLL off" `FB 11` / "5 Hz" `DE 6A` as outside checks) and
+  `ublox_gps_test` (a simulated generation 8 or 10 receiver: ACK/NAK,
+  rates applied, NMEA at the set rate and baud).
 
 ### iDisplay
 - `display_core` (`inc/`, `src/`): `iTextSurface` (character cells and
@@ -424,7 +451,7 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
 ```
 
-Last known results: isensor 21 tests (its 13 drivers plus itransport's
+Last known results: isensor 23 tests (its 14 drivers, two for ublox_gps, plus itransport's
 tests), iTransport 8, iNetTransport 24 without the optional source
 trees (27 before the two Pico tests, with LWIP_DIR, MBEDTLS_DIR,
 LITTLEFS_DIR and FATFS_DIR),
@@ -576,6 +603,8 @@ STM32L432KC (L4).
     safety relay: one loopback UART and one heartbeat UART per MCU,
     `DualChannelLink`, replacing the digital output between them that
     meant "my loopback is complete".
+25. NMEA parser and u-blox GNSS driver (`isensor/ublox_gps`), configured
+    over UBX (CFG-MSG/CFG-RATE or CFG-VALSET).
 
 ## Open items
 
@@ -596,6 +625,11 @@ STM32L432KC (L4).
 
 - None of the drivers or libraries has run on hardware. The MMC56x3,
   LSM303DLHC and HMC6352 sequences come from datasheets only.
+- `ublox_gps`: not run against a receiver; UBX numbers not checked
+  against u-blox's own documents. No baud rate change (CFG-PRT /
+  CFG-UART1-BAUDRATE), no UBX-NAV-PVT, no other makers' setup commands
+  (MediaTek PMTK, Quectel). Not yet in STM32_Static_Lib_Src's sync
+  script `SENSORS` list.
 - The STM32CubeIDE projects were checked with arm-none-eabi-gcc using
   their `.cproject` settings, but have not been opened in CubeIDE.
 - CIP Safety, highest priority (the owner is getting official ODVA

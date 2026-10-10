@@ -11,7 +11,7 @@ pull request, newest first.
 
 #### Added
 - `isensor/ublox_gps`: an NMEA 0183 parser and a u-blox GNSS receiver
-  driver on a UART.
+  driver on a UART ([#22](https://github.com/cgriffis46/Claude-iTransport/pull/22)).
   - `NmeaParser`: byte at a time, checksum required, GGA, RMC, GLL, VTG,
     GSA, GSV and ZDA from any talker, NMEA 4.10 fields, position in
     1e-7 degrees with integer arithmetic, a sentence taken whole or

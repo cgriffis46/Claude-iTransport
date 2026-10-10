@@ -10,7 +10,13 @@
 #   hw/freertos/        xdavis_rfm69: the receiver in its own FreeRTOS task,
 #                       with a packet queue, a log stream buffer and DIO0
 #                       wake-up (header only)
-#   test/               host tests and simulations (an RFM69, ISS stations)
+#   rfm95/              rfm95: the HopeRF RFM95W / Semtech SX1276 LoRa radio,
+#                       a class template over its transport (header only),
+#                       xrfm95 (CMSIS-RTOS2), SX1276Regs.h and LoRaPhy.h
+#   lorawan/            lorawan_crypto: AES-128 and AES-CMAC (header only);
+#                       the LoRaWAN MAC goes here next
+#   test/               host tests and simulations (an RFM69, ISS stations,
+#                       SX1276 radios sharing an air)
 #
 # Needs itransport's sensor_transport and isensor's SensorStateMachine.
 # Built on its own, this file adds itransport from ITRANSPORT_DIR and finds
@@ -81,6 +87,16 @@ if(NOT FREERTOS_INCLUDE_DIRS STREQUAL "")
 endif()
 target_link_libraries(xdavis_rfm69 INTERFACE davis_rfm69)
 
+# --- rfm95 (header only) --------------------------------------------------------
+add_library(rfm95 INTERFACE)
+target_include_directories(rfm95 INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/rfm95/inc)
+target_link_libraries(rfm95 INTERFACE sensor_transport sensor_state_machine)
+
+# --- lorawan_crypto (header only) ---------------------------------------------------
+add_library(lorawan_crypto INTERFACE)
+target_include_directories(lorawan_crypto INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/lorawan/inc)
+target_compile_features(lorawan_crypto INTERFACE cxx_std_17)
+
 # --- Host tests ------------------------------------------------------------------
 if(SENSOR_FW_BUILD_TESTS)
     add_executable(davis_test test/davis_test.cpp)
@@ -102,4 +118,17 @@ if(SENSOR_FW_BUILD_TESTS)
     )
     target_link_libraries(xdavis_rfm69_test PRIVATE davis_rfm69)
     add_test(NAME xdavis_rfm69_test COMMAND xdavis_rfm69_test)
+
+    add_executable(aes_cmac_test test/aes_cmac_test.cpp)
+    target_link_libraries(aes_cmac_test PRIVATE lorawan_crypto)
+    add_test(NAME aes_cmac_test COMMAND aes_cmac_test)
+
+    # test/stub's cmsis_os2.h runs xrfm95's sleep and wake single threaded.
+    add_executable(rfm95_test test/rfm95_test.cpp)
+    target_include_directories(rfm95_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+    )
+    target_link_libraries(rfm95_test PRIVATE rfm95)
+    add_test(NAME rfm95_test COMMAND rfm95_test)
 endif()

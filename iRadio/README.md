@@ -1,7 +1,8 @@
 # iRadio
 
-Radio transceivers and the protocols spoken over them. First up: a receiver for the
-Davis Vantage Pro2 / Vue ISS, on an RFM69 (SX1231).
+Radio transceivers and the protocols spoken over them: a receiver for the Davis
+Vantage Pro2 / Vue ISS on an RFM69 (SX1231), and a LoRa radio driver for the RFM95W
+(SX1276), on which the LoRaWAN MAC will be built.
 
 ```
 rfm69/inc/        RFM69Regs.h: the SX1231 / RFM69 registers used here
@@ -12,8 +13,13 @@ davis/            davis_protocol (pure logic, no radio, no RTOS):
                   davis_rfm69<TTransport>: the receiver, a non-blocking state machine
 hw/freertos/      xdavis_rfm69: the receiver in its own FreeRTOS task, with a packet
                   queue, a log stream buffer, a command queue and DIO0 wake-up
+rfm95/            rfm95<TTransport>: the RFM95W / SX1276 in LoRa mode (header only),
+                  xrfm95 (CMSIS-RTOS2), SX1276Regs.h, LoRaPhy.h (FRF, time on air,
+                  RSSI and SNR)
+lorawan/          Aes128 and AesCmac (header only); the LoRaWAN MAC comes next
 test/             host tests, a simulated RFM69 and simulated ISS stations (sim/),
-                  and a single threaded FreeRTOS stand-in (stub/)
+                  simulated SX1276 radios sharing an air (sim/SimSX1276.h),
+                  and single threaded FreeRTOS and CMSIS-RTOS2 stand-ins (stub/)
 ```
 
 ## How it fits together
@@ -185,6 +191,56 @@ Bugs from the sketch's decode that are fixed in `decode()`:
   operator precedence.
 - **Rain** stored a stale value instead of the counter.
 
+## The RFM95 (SX1276) LoRa radio
+
+`rfm95<TTransport>` is the radio only, one request at a time, each request carrying its
+own channel and settings (`lora::Config`: frequency, SF 7-12, bandwidth, coding rate,
+preamble, CRC, I/Q inversion, power). That is how LoRaWAN drives a radio: a different
+channel and data rate for each uplink and each receive window.
+
+```cpp
+#include "Stm32HalSPITransport.h"
+#include "xrfm95.h"
+
+static xrfm95<Stm32HalSPITransport> radio(rfm95_default_param(), &hspi1, RFM_CS_GPIO_Port, RFM_CS_Pin, spi1Mutex);
+// EXTI on DIO0 (TxDone/RxDone), and DIO1 (RxTimeout) if wired:
+//   radio.onDio0(HAL_GetTick());   with param.dio0Interrupt = true
+
+void radioTask(void*) {
+    lora::Config up = lora::defaultConfig(902300000u);   // US915 channel 0, SF7/125 kHz
+    radio.transmit(up, payload, len);
+    for (;;) {
+        radio.main(osKernelGetTickCount());
+        rfm95_event_t e; uint8_t buf[255];
+        if (radio.takeEvent(&e, buf, sizeof buf)) { /* tx_done, rx_done, rx_timeout, crc_error, fault */ }
+    }
+}
+```
+
+- `receive(cfg, n)` listens for one packet within `n` symbols (RX single, up to 1023,
+  what LoRaWAN's receive windows use); `receive(cfg, 0)` listens until `standby()` or
+  the next request (RX continuous).
+- Every event carries the time it happened: the clock's ticks with `setClock()` (an
+  `iClock` such as `Stm32RtcClock`), else ms. With DIO0 wired the interrupt stamps it,
+  so a busy thread doesn't shift LoRaWAN's receive windows.
+- Startup checks RegVersion (0x12) and reads back the mode and the sync word. A failed
+  transfer, a TX that runs past its time on air plus 200 ms, or an RX single past its
+  window plus 100 ms is a `fault` event, and the radio starts again after a second.
+- Register values are written whole, never read and modified. The FIFO moves in 32 byte
+  pieces (the transports' burst limit).
+- Power: PA_BOOST (the RFM95W has no RFO pin out), 2-17 dBm, 20 dBm with the high power
+  DAC, capped by `param.maxPowerDbm`; the over-current trip is set to match.
+- 500 kHz bandwidth gets the SX1276 errata fix (registers 0x36/0x3A).
+- About 1.5 KB of RAM an instance (the TX copy, the RX buffer, two event slots).
+- Registers and values from Semtech's LoRaMac-node, cross-checked against arduino-LoRa;
+  the time on air is Semtech's formula. Not checked against the datasheet itself.
+
+`Aes128` (encrypt only, which is all LoRaWAN needs) and `AesCmac` (RFC 4493) are table
+based and small; they are not hardened against timing or power analysis.
+
+LoRaWAN Class A (US915, The Things Network, OTAA, LoRaWAN 1.0.4) is the next step. A
+mesh such as MeshCore is a separate protocol on the same radio, not part of LoRaWAN.
+
 ## Building and testing
 
 ```
@@ -192,7 +248,8 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=O
 cmake --build build && ctest --test-dir build
 ```
 
-There are three tests: `davis_test`, `davis_rfm69_test` and `xdavis_rfm69_test`.
+There are five tests: `davis_test`, `davis_rfm69_test`, `xdavis_rfm69_test`,
+`aes_cmac_test` and `rfm95_test`.
 
 - **`stm32_rtc_clock_test`** (in itransport) runs the real `Stm32RtcClock.cpp` against a
   simulated RTC. It covers the calendar arithmetic, counting across seconds, midnight,
@@ -236,9 +293,27 @@ There are three tests: `davis_test`, `davis_rfm69_test` and `xdavis_rfm69_test`.
   - that DIO0 cuts sleeps short, so receive times land on the exact ms;
   - the RTC timestamp path (`onDio0FromISRAt()`), with intervals exact to the tick.
 
-All three also build as `-std=gnu++14 -fno-exceptions -fno-rtti` with `-Wpedantic -Wshadow`.
+- **`aes_cmac_test`**: AES-128 against FIPS-197 (Appendix C.1 and B) and AES-CMAC
+  against RFC 4493's four examples (0, 16, 40 and 64 bytes), fed whole and in pieces.
+  Also checked once against OpenSSL 3.0 on 60 random blocks and 60 random messages.
+- **`rfm95_test`** runs the driver against simulated SX1276s sharing an air (frequency,
+  SF, bandwidth, LDRO, sync word and I/Q must match; collisions; RX single symbol
+  timeouts; DIO0/DIO1). It covers the FRF, time-on-air, RSSI and SNR values, startup
+  (wrong version, no chip), power and OCP, packets of 1, 2, 32, 33, 200 and 255 bytes,
+  I/Q inversion both ways, mismatched settings, RX timeouts (including over 255
+  symbols), CRC errors, interrupt time stamps with a late thread, a stuck TX, a stuck
+  bus, full event slots, the real `SPITransport`, the tick rollover, and `xrfm95`.
+  Breaking the driver on purpose (I/Q, LDRO, the symbol timeout's top bits, the FIFO
+  pieces, power, the FIFO pointer, the errata, time stamps, timeouts, the op queue's
+  size) makes it fail.
+
+The Davis tests also build as `-std=gnu++14 -fno-exceptions -fno-rtti` with `-Wpedantic -Wshadow`.
 The `iRadio` sources, the transport and an example application compile with
 `arm-none-eabi-g++` 13.3 against the FreeRTOS V11.1.0 kernel headers, for Cortex-M4F and
 Cortex-M0+.
 
-**Not yet run** against a real RFM69 or ISS.
+`xrfm95<Stm32HalSPITransport>` compiles without warnings as C++14 against the
+STM32L432's HAL and CMSIS-RTOS2 headers, at `ITRANSPORT_DEBUG` 0 and 3, and `rfm95` for
+Cortex-M0+.
+
+**Not yet run** against a real RFM69, ISS or RFM95.

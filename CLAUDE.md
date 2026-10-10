@@ -52,7 +52,8 @@ PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server,
 iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
 iRadio/                  radios: the Davis ISS receiver on an RFM69, with
-                         a FreeRTOS task (queues, stream buffer)
+                         a FreeRTOS task (queues, stream buffer); the
+                         RFM95 (SX1276) LoRa radio; LoRaWAN (AES/CMAC so far)
 safeTransport/           safety: Safe interface, devices, zones, relays, CAN,
                          CIP Safety placeholders, events
 ```
@@ -210,6 +211,40 @@ GNSS receivers on a UART (`iTransport`): `nmea/` holds what they share,
 - `test/sim/SimDavis.h`: RFM69 at register level plus ISS stations with
   6.7 ms airtime and 1 ms RX settling; `test/stub/` is a single threaded
   FreeRTOS in which time passes only inside `ulTaskNotifyTake()`.
+- `rfm95/` (header only): `rfm95<TTransport>`, the RFM95W / SX1276 in
+  LoRa mode, on `SensorStateMachine`. One request at a time, each with
+  its own `lora::Config` (frequency, SF 7-12, bandwidth, CR, preamble,
+  CRC, I/Q inversion, power), as LoRaWAN uses a radio. `transmit()`,
+  `receive(cfg, symbols)` (RX single, 1-1023 symbols; 0 = RX
+  continuous until `standby()` or the next request), `powerDown()`,
+  `takeEvent()` (tx_done, rx_done with RSSI/SNR, rx_timeout, crc_error,
+  fault; two 255 byte slots, overflow counted). Events are stamped in
+  `onDio0/1()` (interrupt) or at the poll, in `iClock` ticks with
+  `setClock()`. Register writes are queued ops (at most 26, measured;
+  32 slots), whole values, never read-modify-write; the FIFO in 32 byte
+  pieces. Startup checks RegVersion 0x12 and reads back the mode and
+  sync word. Timeouts: TX at time on air + 200 ms, RX single at its
+  window + 100 ms, then `fault` and a restart after 1 s. PA_BOOST only
+  (2-17 dBm, 20 with PaDac 0x87, OCP 100/140 mA), capped by
+  `maxPowerDbm`. 500 kHz errata (0x36/0x3A). LDRO when a symbol is over
+  16 ms. Sync word 0x34 (LoRaWAN public, TTN). WriteHigh address bit on
+  an SPITransport. `xrfm95`: CMSIS-RTOS2 thread flag 0x04000000. About
+  1.5 KB of RAM. `SX1276Regs.h`, `LoRaPhy.h` (FRF = f*2^19/32 MHz,
+  Semtech's time-on-air formula, RSSI -157 + r + r/16 (+ SNR if
+  negative), SNR raw/4): values from Semtech's LoRaMac-node, checked
+  against arduino-LoRa, not against the datasheet. DetectOptimize and
+  DetectionThreshold are left at reset (their upper bits unverified).
+- `lorawan/` (header only, `lorawan_crypto`): `Aes128` (encrypt only;
+  LoRaWAN needs nothing else) and `AesCmac` (RFC 4493). Table based, not
+  hardened against side channels. Next: the LoRaWAN 1.0.4 Class A MAC
+  for US915 and The Things Network (OTAA, frame counters, RX1/RX2,
+  DevNonce kept across resets), written here, not LMIC/LoRaMac-node.
+  MeshCore is a separate mesh protocol on the same radio, not LoRaWAN.
+- `test/sim/SimSX1276.h`: SX1276s at register level sharing an `Air`
+  (frequency, SF, BW, LDRO, sync word and I/Q must match; collisions;
+  the LoRa bit only changes in sleep; RX single symbol timeouts; DIO0/1;
+  faults: absent, stuck, refused, broken TX, corrupt CRC).
+  `rfm95_test` (153 checks) and `aes_cmac_test` (FIPS-197, RFC 4493).
 
 ### safeTransport (flat folder, builds on HOST; one test so far)
 ```
@@ -522,7 +557,7 @@ cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON \
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # ssd1306_test, gui_test
 cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
-      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
+      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis, rfm95, aes_cmac tests
 ```
 
 Last known results: isensor 25 tests (its 15 drivers plus nmea_parser_test, plus itransport's
@@ -532,8 +567,9 @@ LITTLEFS_DIR and FATFS_DIR),
 PLCTransport 3 (with MBEDTLS_DIR), safeTransport 10
 (dual_channel_link_test and itransport's 9),
 iDisplay 12 (ssd1306_test,
-hd44780_test, gui_test and itransport's 9), iRadio 12 (davis_test,
-davis_rfm69_test, xdavis_rfm69_test and itransport's 9), all passing,
+hd44780_test, gui_test and itransport's 9), iRadio 14 (davis_test,
+davis_rfm69_test, xdavis_rfm69_test, aes_cmac_test, rfm95_test and
+itransport's 9), all passing,
 at ITRANSPORT_DEBUG 0 and 3. `python3 tools/saleae/test_saleae_log.py`: 5. Each test file also
 has a one-line `g++` build command in its header.
 
@@ -686,6 +722,9 @@ STM32L432KC (L4).
     `Stm32DebugPort.h`, `tools/saleae/saleae_log.py`), hooked into
     SensorStateMachine, BusTransport, the GNSS drivers and
     DualChannelLink.
+28. The RFM95 (SX1276) LoRa radio driver in iRadio, with a simulated
+    air of SX1276s, and AES-128/AES-CMAC for the LoRaWAN MAC to come
+    (US915, The Things Network, written in-house).
 
 ## Open items
 
@@ -760,6 +799,11 @@ STM32L432KC (L4).
 - `iRadio`: not run against an RFM69 or an ISS. `Stm32RtcClock` not run
   on a chip (compiled against the F407/L432/L476 HAL headers only). Repeater packets are
   delivered on request but never used for timing; no transmit.
+- `rfm95`: not run against an RFM95; register values not checked
+  against Semtech's datasheet (LoRaMac-node and arduino-LoRa agree).
+  No FSK mode, no channel activity detection (CAD), no frequency hopping
+  (FHSS), no RFO output (the RFM95W only brings out PA_BOOST). The
+  LoRaWAN MAC is not written yet.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;
   the files it names are already gone.
 - `safeTransport/sensor_fw.zip` and its `*.html` files are old reference

@@ -11,7 +11,7 @@ pull request, newest first.
 
 #### Added
 - `isensor/mtk3339`: a MediaTek MT3339 GNSS module driver (Adafruit
-  Ultimate GPS, GlobalTop PA6H/PA1616S, CDTop), on a UART.
+  Ultimate GPS, GlobalTop PA6H/PA1616S, CDTop), on a UART. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
   - `Pmtk.h`: PMTK314 (sentences), PMTK220 (output interval), PMTK300
     (fix interval) and GlobalTop's `$PGCMD,33` antenna report, built
     without printf.
@@ -42,10 +42,10 @@ pull request, newest first.
 - `NmeaParser` moved from `isensor/ublox_gps` to `isensor/nmea`, shared
   by both GNSS drivers, with `ByteRing` (the interrupt-to-thread ring,
   taken out of `ublox_gps`) and its own test. It now gives a
-  proprietary sentence's address and fields to the driver.
+  proprietary sentence's address and fields to the driver. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
   `ublox_gps_test` took over the UBX framing tests.
 - `CLAUDE.md`: `ublox_gps` is now in STM32_Static_Lib_Src's sync script
-  and its iSensor projects' include paths, so that open item is gone.
+  and its iSensor projects' include paths, so that open item is gone. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
 
 ### 2026-10-09
 

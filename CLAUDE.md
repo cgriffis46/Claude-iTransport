@@ -53,7 +53,8 @@ iDisplay/                displays (SSD1306) and a GUI: screens, menus,
                          fields, buttons, a CMSIS-RTOS2 GUI task
 iRadio/                  radios: the Davis ISS receiver on an RFM69, with
                          a FreeRTOS task (queues, stream buffer); the
-                         RFM95 (SX1276) LoRa radio; a LoRaWAN Class A MAC
+                         RFM95 (SX1276) LoRa radio; a LoRaWAN Class A MAC;
+                         a MeshCore node
 safeTransport/           safety: Safe interface, devices, zones, relays, CAN,
                          CIP Safety placeholders, events
 ```
@@ -238,9 +239,13 @@ GNSS receivers on a UART (`iTransport`): `nmea/` holds what they share,
   radio as the MAC sees it, `lora::Event`; `rfm95_event_t` and
   `rfm95_ev_*` are its names for them). An RX single's safety deadline
   allows for a 255 byte packet that began inside the window.
-- `lorawan/`: `Aes128` (encrypt only; LoRaWAN needs nothing else) and
-  `AesCmac` (RFC 4493), header only (`lorawan_crypto`), table based, not
-  hardened against side channels. The `lorawan` library: `LoRaWanFrame`
+- `crypto/` (header only, `radio_crypto`): `Aes128` (both ways),
+  `AesCmac` (RFC 4493), `Sha256` and `HmacSha256`; table based, not
+  hardened against side channels. Checked against FIPS-197, RFC 4493,
+  FIPS 180-4, RFC 4231 (and OpenSSL/hashlib on random inputs).
+- `third_party/monocypher/`: Monocypher 4.0.2 (BSD-2 / CC0), vendored
+  unchanged, `monocypher` (C99) library; only its Ed25519 is used.
+- `lorawan/`: the `lorawan` library: `LoRaWanFrame`
   (1.0.x frames, keys, MIC, payload crypto; pure functions, checked
   against the lora-packet npm library), `Region` (what differs per
   region) and `RegionUS915` (subBand 2 = TTN; tables and LinkADRReq rules
@@ -258,17 +263,46 @@ GNSS receivers on a UART (`iTransport`): `nmea/` holds what they share,
   `main()` runs the radio too (one thread); `sleepHintMs()` and
   `xLoRaWanMac` (CMSIS-RTOS2, flag 0x08000000, `wakeFromIsr()` after the
   radio's `onDio0()`) sleep exactly as long as allowed. `Mac` 1.4 KB RAM.
-  MeshCore is a separate mesh protocol on the same radio, not LoRaWAN.
+- `meshcore/` (`meshcore` library): a MeshCore node (protocol v1, as in
+  MeshCore firmware v1.12+, MIT, meshcore-dev/MeshCore). `MeshPacket`
+  (header, transport codes, path with 1-3 byte hashes, payload <= 184,
+  packet hash = SHA-256 of type + payload, first 8 bytes), `MeshCrypto`
+  (AES-128-ECB with zero padding + 2 byte HMAC-SHA256 tag keyed with the
+  32 byte padded secret; channel hash = SHA-256(key)[0]; the "Public"
+  key), `MeshIdentity` (Ed25519 via Monocypher from a 32 byte seed;
+  public keys starting 00/FF refused), `MeshMessages` (adverts: key,
+  time, signature over key|time|app data, app data <= 32 bytes with
+  flags/location/features/UTF-8 name; group text "sender: text" <= 160
+  and group data type|len|data <= 165), and `Node` over any
+  `iLoRaRadio`: RX continuous, duplicate table (64 hashes), adverts
+  verified, group channels (4) opened, its own packets sent by flood
+  through a queue of 3 with MeshCore's 50%/hour airtime budget and
+  listen-before-talk (120-480 ms waits, forced after 4 s). Sync word
+  0x12 is the radio's (rfm95_param_t::syncWord); US default 910.525 MHz
+  SF7 62.5 kHz CR5, preamble 32 (16 above SF8), 17 dBm. Not a repeater;
+  no direct messages, ACKs, paths or regions yet. A device runs either
+  LoRaWAN or MeshCore. `xMeshNode` (CMSIS-RTOS2, flag 0x10000000).
+  Node 2.7 KB RAM; ~23 KB flash with Ed25519 (M4, -O2); advert verify
+  needs ~2.4 KB of stack (use a 4 KB task). Checked against MeshCore's
+  own Packet.cpp, Utils.cpp and Identity.cpp built on the PC (900
+  vectors; a sample in meshcore_packet_test).
+- `iLoRaRadio` also has `channelBusy()` (a header heard in RX continuous,
+  no RxDone yet; forgotten after a 255 byte packet's time) and `busy()`
+  (a request queued or transfers under way: call main() again).
 - `test/sim/SimSX1276.h`: SX1276s at register level sharing an `Air`
   (frequency, SF, BW, LDRO, sync word and I/Q must match; collisions;
   the LoRa bit only changes in sleep; RX single symbol timeouts; DIO0/1;
   faults: absent, stuck, refused, broken TX, corrupt CRC; a radio entering
-  RX may still lock onto a preamble with 6 symbols left), and a `sniff`
-  hook for a gateway. `test/sim/SimLoRaWanServer.h`: a TTN gateway and
+  RX may still lock onto a preamble with 6 symbols left; ValidHeader
+  raised after preamble + header; `inRange` for topologies), and a
+  `sniff` hook for a gateway. `test/sim/SimLoRaWanServer.h`: a TTN gateway and
   network server for one device on sub-band 2, with its own US915 numbers
   and its own AES inverse cipher (join accepts are made by decrypting).
-  `rfm95_test` (157 checks), `aes_cmac_test` (FIPS-197, RFC 4493),
-  `lorawan_frame_test` (124), `lorawan_mac_test` (318).
+  `rfm95_test` (171 checks), `aes_cmac_test` (FIPS-197, RFC 4493),
+  `lorawan_frame_test` (124), `lorawan_mac_test` (318),
+  `meshcore_crypto_test` (41), `meshcore_packet_test` (72),
+  `meshcore_node_test` (152: nodes, a test repeater, MeshCore-made
+  packets, LBT, the budget, faults, `xMeshNode`).
 
 ### safeTransport (flat folder, builds on HOST; one test so far)
 ```
@@ -581,7 +615,7 @@ cmake -S PLCTransport -B build -DSENSOR_FW_BUILD_TESTS=ON \
 cmake -S iDisplay -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # ssd1306_test, gui_test
 cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
-      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis, rfm95, aes_cmac, lorawan tests
+      -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis, rfm95, aes_cmac, lorawan, meshcore tests
 ```
 
 Last known results: isensor 25 tests (its 15 drivers plus nmea_parser_test, plus itransport's
@@ -591,9 +625,10 @@ LITTLEFS_DIR and FATFS_DIR),
 PLCTransport 3 (with MBEDTLS_DIR), safeTransport 10
 (dual_channel_link_test and itransport's 9),
 iDisplay 12 (ssd1306_test,
-hd44780_test, gui_test and itransport's 9), iRadio 16 (davis_test,
+hd44780_test, gui_test and itransport's 9), iRadio 19 (davis_test,
 davis_rfm69_test, xdavis_rfm69_test, aes_cmac_test, rfm95_test,
-lorawan_frame_test, lorawan_mac_test and itransport's 9), all passing,
+lorawan_frame_test, lorawan_mac_test, meshcore_crypto_test,
+meshcore_packet_test, meshcore_node_test and itransport's 9), all passing,
 at ITRANSPORT_DEBUG 0 and 3. `python3 tools/saleae/test_saleae_log.py`: 5. Each test file also
 has a one-line `g++` build command in its header.
 
@@ -752,6 +787,10 @@ STM32L432KC (L4).
 29. The LoRaWAN 1.0.4 Class A MAC (`lorawan::Mac`, `RegionUS915`,
     `LoRaWanFrame`, `xLoRaWanMac`), tested against a simulated TTN
     gateway and network server.
+30. A MeshCore node on the RFM95 (`iRadio/meshcore`): group channels and
+    signed adverts, flood sending with MeshCore's budget and
+    listen-before-talk; SHA-256/HMAC and AES decryption in
+    `iRadio/crypto`, Ed25519 from vendored Monocypher.
 
 ## Open items
 
@@ -838,8 +877,17 @@ STM32L432KC (L4).
   lag by the downlinks since the last save (a replay of those would be
   accepted after a reset). MAC answers that don't fit wait for the next
   uplink (the application sends one). No RTC-backed GPS time from
-  DeviceTimeAns yet (the event carries it). Not in the STM32_Static_Lib_Src
-  sync yet.
+  DeviceTimeAns yet (the event carries it).
+- MeshCore: never run on air with real MeshCore devices; checked against
+  MeshCore's own code built on a PC and a simulated repeater. Not a
+  repeater; no direct/anonymous messages, ACKs, path learning, transport
+  codes (regions), multipart, trace or CAD. The US preset is remembered,
+  not checked (api.meshcore.nz unreachable here). Group packets have no
+  sender authentication and a 2 byte MAC (MeshCore's design). Identities
+  are Monocypher's 64 byte form (seed | public key), not MeshCore's
+  expanded orlp form: a MeshCore device's exported identity can't be
+  loaded. The STM32_Static_Lib_Src iRadio projects need crypto/,
+  meshcore/ and third_party/ (C sources) added to the sync.
 - `iTransport/itransport/REMOVED.txt` is left over from the zip import;
   the files it names are already gone.
 - `safeTransport/sensor_fw.zip` and its `*.html` files are old reference

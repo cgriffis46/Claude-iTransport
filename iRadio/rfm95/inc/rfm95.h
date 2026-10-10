@@ -166,6 +166,15 @@ public:
 	uint32_t ticksPerSecond() const override { return _clock ? _clock->ticksPerSecond() : 1000u; }
 	uint32_t now(uint32_t nowMs) const override { return nowTicks(nowMs); }
 	int8_t maxPowerDbm() const override { return _param.maxPowerDbm < 20 ? _param.maxPowerDbm : 20; }
+	// In RX continuous, a valid header seen at the last poll of the IRQ
+	// flags and no RxDone yet (as fresh as param.pollMs).
+	bool channelBusy() const override { return _rxBusy && receivingContinuous(); }
+	// A request waiting to start, or anything but waiting (idle,
+	// transmitting, listening, or the error backoff).
+	bool busy() const override {
+		const rfm95_state_t s = this->_state;
+		return _req != Req::None || (s != rfm95_idle && s != rfm95_tx_wait && s != rfm95_rx_wait && s != rfm95_error);
+	}
 
 	const rfm95_stats_t& stats() const { return _st; }
 
@@ -211,6 +220,8 @@ private:
 	uint32_t     _startMs = 0;        // when the TX or RX began, for the safety timeout
 	uint32_t     _deadlineMs = 0;     // after that long, the TX/RX single is stuck (0: none)
 	uint32_t     _lastPollMs = 0;
+	bool         _rxBusy = false;     // a header heard, no RxDone yet
+	uint32_t     _rxBusySinceMs = 0;
 
 	// Reading a packet.
 	uint8_t  _regs[4];                // 0x10..0x13, then 0x19..0x1A, version, read-backs

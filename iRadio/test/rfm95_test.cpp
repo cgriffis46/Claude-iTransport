@@ -356,6 +356,47 @@ static void testRxSingleTimeoutAndCrc() {
 	CHECK(!b.drv->takeEvent(&e, buf, sizeof buf) && b.drv->stats().crcErrors == 1);
 }
 
+// channelBusy(): a header heard in RX continuous and no RxDone yet; a
+// header that never becomes a packet is forgotten after a 255 byte
+// packet's time. busy(): a request waiting or transfers under way.
+static void testChannelBusy() {
+	World w;
+	Node<> a(w.air), b(w.air);
+	w.add(a);
+	w.add(b);
+	CHECK(startUp(w, a) && startUp(w, b));
+	CHECK(!b.drv->busy() && !b.drv->channelBusy());
+	CHECK(b.drv->receive(cfg915(), 0));
+	CHECK(b.drv->busy());                 // queued, not started yet
+	w.run(5);
+	CHECK(!b.drv->busy() && b.drv->receivingContinuous() && !b.drv->channelBusy());
+	std::vector<uint8_t> msg(100, 0x42);
+	CHECK(a.drv->transmit(cfg915(), msg.data(), 100));
+	const uint32_t t0 = w.t;
+	while (!b.drv->channelBusy() && w.t - t0 < 100) w.run(1);
+	CHECK(b.drv->channelBusy() && a.chip.txOn);   // header heard, packet still on the air
+	rfm95_event_t e;
+	uint8_t buf[128];
+	while (!b.drv->takeEvent(&e, buf, sizeof buf) && w.t - t0 < 500) w.run(1);
+	CHECK(e.kind == rfm95_ev_rx_done && !b.drv->channelBusy());
+	// A header with no packet after it (the flag set by hand).
+	b.chip.reg[sx1276::kRegIrqFlags] |= sx1276::kIrqValidHeader;
+	w.run(5);
+	CHECK(b.drv->channelBusy());
+	const uint32_t limit = lora::timeOnAirUs(cfg915(), 255) / 1000u + Radio::kRxMarginMs;
+	w.run(limit - 20);
+	CHECK(b.drv->channelBusy());
+	w.run(40);
+	CHECK(!b.drv->channelBusy() && !(b.chip.reg[sx1276::kRegIrqFlags] & sx1276::kIrqValidHeader));
+	CHECK(b.drv->receivingContinuous());
+	// Not in RX continuous: never busy with traffic.
+	CHECK(b.drv->standby());
+	w.run(5);
+	b.chip.reg[sx1276::kRegIrqFlags] |= sx1276::kIrqValidHeader;
+	w.run(5);
+	CHECK(!b.drv->channelBusy());
+}
+
 // With DIO0 wired, TxDone and RxDone are stamped the moment they happen,
 // even with a slow poll; and a clock gives the stamps in its own ticks.
 struct SimClock : iClock {
@@ -524,6 +565,7 @@ int main() {
 	testIqInversion();
 	testMismatches();
 	testRxSingleTimeoutAndCrc();
+	testChannelBusy();
 	testDioAndClock();
 	testStuckTx();
 	testBusStuck();

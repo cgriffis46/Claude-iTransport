@@ -157,6 +157,7 @@ void rfm95<TTransport>::startRequest(uint32_t nowMs) {
 	using namespace sx1276;
 	opsClear();
 	_deadlineMs = 0;
+	_rxBusy = false;
 	switch (_req) {
 	case Req::Tx: {
 		_rxContinuous = false;
@@ -344,6 +345,14 @@ void rfm95<TTransport>::main(uint32_t nowMs) {
 			startRequest(nowMs);
 			break;
 		}
+		if (_rxBusy && nowMs - _rxBusySinceMs > lora::timeOnAirUs(_cfg, kMaxPayload) / 1000u + kRxMarginMs) {
+			// A header that never became a packet: forget it, and its flag.
+			_rxBusy = false;
+			opsClear();
+			op(kRegIrqFlags, kIrqValidHeader);
+			runOps(rfm95_rx_wait, nowMs);
+			break;
+		}
 		if (waitFlags(nowMs, _deadlineMs)) {
 			_afterOps = this->_state;   // where read_status came from
 			this->enter(rfm95_read_status, nowMs);
@@ -373,6 +382,8 @@ void rfm95<TTransport>::main(uint32_t nowMs) {
 				break;
 			}
 			// Receiving.
+			const bool wasBusy = _rxBusy;
+			_rxBusy = false;
 			if (flags & kIrqRxTimeout) {
 				++_st.rxTimeouts;
 				push(rfm95_ev_rx_timeout, when, 0, 0, 0);
@@ -396,6 +407,10 @@ void rfm95<TTransport>::main(uint32_t nowMs) {
 					this->enter(rfm95_read_signal, nowMs);
 				}
 			} else {
+				if (flags & kIrqValidHeader) {   // a packet is arriving
+					if (!wasBusy) _rxBusySinceMs = nowMs;
+					_rxBusy = true;
+				}
 				this->enter(rfm95_rx_wait, nowMs);
 			}
 		}

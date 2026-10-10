@@ -48,7 +48,7 @@ struct Sx1276 {
 	Air* air = nullptr;
 
 	// What happened.
-	struct Sent { std::vector<uint8_t> data; uint32_t freqHz; uint8_t sf, bw, paConfig, paDac; bool invertIq, crc; uint32_t start, end; };
+	struct Sent { std::vector<uint8_t> data; uint32_t freqHz; uint8_t sf, bw, paConfig, paDac; bool invertIq, crc; uint32_t start, end; uint16_t preamble = 8; };
 	std::vector<Sent> sent;
 	int received = 0, timeouts = 0, writes = 0;
 
@@ -58,7 +58,7 @@ struct Sx1276 {
 	uint8_t rxWriteAddr = 0;    // where RX continuous puts the next packet
 	bool txOn = false;
 	uint32_t txEnd = 0;
-	struct Incoming { bool on = false; uint32_t gen = 0; bool collided = false; } incoming;
+	struct Incoming { bool on = false; uint32_t gen = 0; bool collided = false; uint32_t headerAt = 0; bool header = false; } incoming;
 
 	Sx1276() {
 		std::memset(reg, 0, sizeof reg);
@@ -103,8 +103,18 @@ struct Air {
 	// A gateway: hears every packet whole when it ends, whatever its
 	// channel or spreading factor (it filters for itself), collisions aside.
 	std::function<void(const Sx1276& from, const Sx1276::Sent& p)> sniff;
+	// Who hears whom (unset: everyone hears everyone).
+	std::function<bool(const Sx1276& from, const Sx1276& to)> inRange;
 
 	void add(Sx1276& r) { radios.push_back(&r); r.air = this; }
+
+	// RegIrqFlags' ValidHeader goes up once the preamble (+ 4.25 symbols of
+	// sync) and the explicit header (taken as 8 symbols) have been heard.
+	static void armHeader(Sx1276& r, const Sx1276::Sent& p) {
+		const uint64_t us = (uint64_t)lora::symbolUs(p.sf, (lora::Bw)p.bw) * (4u * p.preamble + 17u + 32u) / 4u;
+		r.incoming.headerAt = p.start + (uint32_t)((us + 999) / 1000);
+		r.incoming.header = false;
+	}
 
 	static constexpr uint32_t kLockSymbols = 6;   // of preamble a receiver needs to lock on
 	// A radio just entered RX: a packet already under way can still be
@@ -112,12 +122,14 @@ struct Air {
 	void catchUp(Sx1276& r) {
 		for (OnAir& a : flying) {
 			if (a.from == &r || !matches(*a.from, a.p, r) || r.incoming.on) continue;
+			if (inRange && !inRange(*a.from, r)) continue;
 			const uint32_t symUs = lora::symbolUs(a.p.sf, (lora::Bw)a.p.bw);
 			const uint32_t lateUs = (uint32_t)((uint64_t)symUs * (8 * 4 + 17 - 4 * kLockSymbols) / 4);   // (8 + 4.25 - 6) symbols
 			if ((r.now - a.p.start) * 1000u > lateUs) continue;
 			r.incoming.on = true;
 			r.incoming.gen = r.gen;
 			r.incoming.collided = false;
+			armHeader(r, a.p);
 			a.listeners.push_back(&r);
 		}
 	}
@@ -132,10 +144,12 @@ struct Air {
 		OnAir a{&from, p, {}};
 		for (Sx1276* r : radios) {
 			if (r == &from || !matches(from, p, *r)) continue;
+			if (inRange && !inRange(from, *r)) continue;
 			if (r->incoming.on) { r->incoming.collided = true; continue; }
 			r->incoming.on = true;
 			r->incoming.gen = r->gen;
 			r->incoming.collided = false;
+			armHeader(*r, p);
 			a.listeners.push_back(r);
 		}
 		flying.push_back(a);
@@ -179,6 +193,7 @@ inline void Sx1276::write(uint8_t r, uint8_t v) {
 			c.preamble = (uint16_t)((reg[kRegPreambleMsb] << 8) | reg[kRegPreambleMsb + 1]);
 			p.start = now;
 			p.end = now + (lora::timeOnAirUs(c, len) + 999) / 1000;
+			p.preamble = c.preamble;
 			txOn = true;
 			txEnd = p.end;
 			sent.push_back(p);
@@ -224,6 +239,10 @@ inline void Sx1276::tick(uint32_t t) {
 		reg[kRegIrqFlags] |= kIrqTxDone;
 		reg[kRegOpMode] = (uint8_t)((reg[kRegOpMode] & ~kOpModeMask) | kOpStandby);
 		if ((reg[kRegDioMapping1] >> 6) == 1 && dio0) dio0();
+	}
+	if (incoming.on && !incoming.header && inRx() && incoming.gen == gen && (int32_t)(t - incoming.headerAt) >= 0) {
+		incoming.header = true;
+		reg[kRegIrqFlags] |= kIrqValidHeader;
 	}
 	if (lora() && mode() == kOpRxSingle && !incoming.on) {
 		const uint32_t limitMs = (uint32_t)(((uint64_t)lora::symbolUs(sf(), (lora::Bw)bw()) * symbTimeout() + 999) / 1000);

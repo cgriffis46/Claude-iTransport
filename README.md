@@ -92,7 +92,7 @@ flags STM32CubeIDE uses.
 | `iTransport/itransport/` | the interfaces, the bus classes and the platform transports above |
 | `isensor/` | sensor drivers: AHT20, BME280, BMP280, DS18B20, HMC6352, HTU21DF, LPS35HW, LSM303DLHC, MMC56x3, MPL3115A2, PMS5003 PM2.5 (over a UART), SHT31, Si7021, and u-blox and MediaTek MT3339 GNSS receivers with an NMEA parser |
 | `iDisplay/` | SSD1306 OLED and HD44780 character LCD drivers, and a small GUI (screens, menus, fields, debounced buttons) |
-| `iRadio/` | a Davis Instruments weather station (ISS) receiver on an RFM69 radio, an RFM95W / SX1276 LoRa radio driver, and a LoRaWAN 1.0.4 Class A end device (US915, The Things Network) |
+| `iRadio/` | a Davis Instruments weather station (ISS) receiver on an RFM69 radio, an RFM95W / SX1276 LoRa radio driver, a LoRaWAN 1.0.4 Class A end device (US915, The Things Network), and a MeshCore mesh node (group channels, signed adverts) |
 | `iNetTransport/` | W5500 Ethernet and ESP-AT Wi-Fi, lwIP sockets, DHCP, DNS, SNTP, MQTT and HTTP clients, an HTTP(S) server with logins, and SPI flash / SD card storage |
 | `PLCTransport/` | a PLC tag database served over CIP and as JSON for a web UI |
 | `safeTransport/` | dual-channel safety inputs, outputs, devices and zones, and the link between the two MCUs of a safety relay |

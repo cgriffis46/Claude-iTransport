@@ -2,8 +2,8 @@
 
 Radio transceivers and the protocols spoken over them: a receiver for the Davis
 Vantage Pro2 / Vue ISS on an RFM69 (SX1231), a LoRa radio driver for the RFM95W
-(SX1276), and a LoRaWAN 1.0.4 Class A end device on top of it (US915, The Things
-Network).
+(SX1276), and on top of it either a LoRaWAN 1.0.4 Class A end device (US915, The Things
+Network) or a MeshCore mesh node.
 
 ```
 rfm69/inc/        RFM69Regs.h: the SX1231 / RFM69 registers used here
@@ -17,12 +17,16 @@ hw/freertos/      xdavis_rfm69: the receiver in its own FreeRTOS task, with a pa
 rfm95/            rfm95<TTransport>: the RFM95W / SX1276 in LoRa mode (header only),
                   xrfm95 (CMSIS-RTOS2), SX1276Regs.h, LoRaPhy.h (FRF, time on air,
                   RSSI and SNR)
+crypto/           Aes128 (both ways), AesCmac, Sha256 and HmacSha256 (header only)
 lorawan/          LoRaWAN: Mac (Class A, OTAA, MAC commands, ADR), LoRaWanFrame (frames,
-                  keys, MIC), Region / RegionUS915, xLoRaWanMac (CMSIS-RTOS2 loop),
-                  Aes128 and AesCmac
+                  keys, MIC), Region / RegionUS915, xLoRaWanMac (CMSIS-RTOS2 loop)
+meshcore/         MeshCore: Node (channels, adverts, flood sending), MeshPacket,
+                  MeshCrypto, MeshIdentity (Ed25519), MeshMessages, xMeshNode
+third_party/      Monocypher 4.0.2 (Ed25519; BSD-2 / CC0, vendored unchanged)
 test/             host tests, a simulated RFM69 and simulated ISS stations (sim/),
                   simulated SX1276 radios sharing an air (sim/SimSX1276.h), a
                   simulated TTN gateway and network server (sim/SimLoRaWanServer.h),
+                  radio ranges and ValidHeader for mesh tests,
                   and single threaded FreeRTOS and CMSIS-RTOS2 stand-ins (stub/)
 ```
 
@@ -304,7 +308,60 @@ void lorawanTask(void*) {
   interface is where they go), FSK. TTN's fair use policy (30 s of airtime a day) is the
   application's to keep.
 
-A mesh such as MeshCore is a separate protocol on the same radio, not part of LoRaWAN.
+## MeshCore
+
+[MeshCore](https://github.com/meshcore-dev/MeshCore) is a LoRa mesh: nodes flood packets
+through repeaters, group channels are encrypted with a shared key, and each node has an
+Ed25519 identity it announces in signed adverts. `meshcore::Node` is a node for it on any
+`lora::iLoRaRadio`, written here from MeshCore's documents and source (protocol v1, as in
+firmware v1.12+). A device runs either this or LoRaWAN, not both.
+
+```cpp
+#include "rfm95.h"
+#include "MeshNode.h"
+#include "xMeshNode.h"
+
+rfm95_param_t rp = rfm95_default_param();
+rp.syncWord = 0x12;                        // MeshCore's sync word (LoRaWAN's is 0x34)
+rp.dio0Interrupt = true;
+static rfm95<Stm32HalSPITransport> radio(rp, &hspi1, RFM_CS_GPIO_Port, RFM_CS_Pin, spi1Mutex);
+static meshcore::LocalIdentity id;         // id.fromSeed(seed): 32 random bytes, kept in flash
+static meshcore::Node node(radio, id, meshcore::defaultNodeParam());   // US: 910.525 MHz SF7 62.5k CR5
+static meshcore::xMeshNode loop(node);
+
+// EXTI on DIO0: radio.onDio0(HAL_GetTick()); loop.wakeFromIsr();
+
+void meshTask(void*) {                     // give it a 4 KB stack (Ed25519 verify)
+    int8_t pub = node.addChannel(meshcore::kPublicChannelKey, 16);
+    int8_t mine = node.addChannel(myKey, 16);
+    node.begin(osKernelGetTickCount());
+    node.sendAdvert(unixTime, advert);     // type, name, location
+    for (;;) {
+        loop.step(osKernelGetTickCount());
+        meshcore::NodeEvent e; uint8_t buf[184];
+        while (node.takeEvent(&e, buf, sizeof buf)) { /* advert, group_text, group_data, sent */ }
+        // node.sendGroupData(mine, 0xFF00, reading, n);   or sendGroupText(pub, unixTime, "name", "text")
+    }
+}
+```
+
+- **Receiving**: adverts are verified (Ed25519) and reported with the sender's key, name,
+  type, location and hop count; group text and data are reported for the channels the node
+  has keys for (up to 4). Duplicates (the last 64 packet hashes) and malformed packets are
+  dropped; other payload types (direct messages, paths, ACKs) are counted and ignored.
+- **Sending**: adverts (flood or zero hop) and group packets go out by flood for repeaters to
+  carry, through a queue of 3, under MeshCore's rules: an airtime budget (50% of each hour by
+  default) and listen-before-talk (wait 120-480 ms while a packet is arriving, for up to
+  4 s). The node's own packets go into its duplicate table, so a repeater's copy is dropped.
+- **Group data** suits sensor readings: a 16 bit type (FF00-FFFF are free for development;
+  others are allocated in MeshCore's `docs/number_allocations.md`) and up to 165 bytes.
+- **Security, MeshCore's design**: channel packets are AES-128 in ECB mode with a 2 byte
+  HMAC tag and no sender signature (anyone with the key can write any name); adverts are
+  signed. The "Public" channel's key is well known.
+- RAM: `Node` 2.7 KB, plus the radio's 1.5 KB. Flash about 23 KB with Ed25519 on a
+  Cortex-M4 (-O2).
+- Not here yet: repeating, direct messages (ECDH), ACKs, learned paths, regions
+  (transport codes), CAD.
 
 ## Building and testing
 
@@ -313,8 +370,9 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=O
 cmake --build build && ctest --test-dir build
 ```
 
-There are seven tests: `davis_test`, `davis_rfm69_test`, `xdavis_rfm69_test`,
-`aes_cmac_test`, `rfm95_test`, `lorawan_frame_test` and `lorawan_mac_test`.
+There are ten tests: `davis_test`, `davis_rfm69_test`, `xdavis_rfm69_test`,
+`aes_cmac_test`, `rfm95_test`, `lorawan_frame_test`, `lorawan_mac_test`,
+`meshcore_crypto_test`, `meshcore_packet_test` and `meshcore_node_test`.
 
 - **`stm32_rtc_clock_test`** (in itransport) runs the real `Stm32RtcClock.cpp` against a
   simulated RTC. It covers the calendar arithmetic, counting across seconds, midnight,
@@ -390,6 +448,22 @@ There are seven tests: `davis_test`, `davis_rfm69_test`, `xdavis_rfm69_test`,
   clock across the ms and tick rollovers, and `xLoRaWanMac` sleeping only as long as
   allowed. 42 deliberate breaks of the MAC, region and frames are each caught.
 
+- **`meshcore_crypto_test`**: AES-128 decryption (FIPS-197), SHA-256 (FIPS 180-4, a million
+  "a", padding boundaries), HMAC-SHA256 (RFC 4231) and Ed25519 (RFC 8032 tests 1-3,
+  reproduced with the orlp code MeshCore uses), and the 00/FF key rule.
+- **`meshcore_packet_test`**: packets, adverts and group packets against ones made by
+  MeshCore's own code (its Packet.cpp, Utils.cpp, Identity.cpp, lib/ed25519 and the Crypto
+  library it uses, built on a PC: 900 random ones matched, 10 kept), plus a channel message,
+  a datagram and a repeater's advert MeshCore made; a channel message built here is byte
+  for byte MeshCore's. Edges: path lengths, UTF-8 cuts, oversize data, MAC bytes, two
+  channels with the same hash byte.
+- **`meshcore_node_test`**: nodes on a simulated air with radio ranges, a MeshCore-style
+  repeater written in the test, and MeshCore-made packets sent raw: messages through one and
+  two repeaters (hop counts, duplicates, 2 byte path hashes), the sync word, forged adverts,
+  listen-before-talk (waits, and gives up after `lbtMaxMs`), the airtime budget, the queue,
+  dropped events, radio faults while sending and listening, and `xMeshNode`. 38 deliberate
+  breaks of the MeshCore code and crypto are each caught.
+
 The Davis tests also build as `-std=gnu++14 -fno-exceptions -fno-rtti` with `-Wpedantic -Wshadow`.
 The `iRadio` sources, the transport and an example application compile with
 `arm-none-eabi-g++` 13.3 against the FreeRTOS V11.1.0 kernel headers, for Cortex-M4F and
@@ -398,7 +472,9 @@ Cortex-M0+.
 `xrfm95<Stm32HalSPITransport>` compiles without warnings as C++14 against the
 STM32L432's HAL and CMSIS-RTOS2 headers, at `ITRANSPORT_DEBUG` 0 and 3, and `rfm95` for
 Cortex-M0+. So do the `lorawan` sources and an application with `xLoRaWanMac` over
-`rfm95<Stm32HalSPITransport>`.
+`rfm95<Stm32HalSPITransport>`, and the `meshcore` sources, Monocypher (C99) and an
+application with `xMeshNode` over `rfm95<Stm32HalSPITransport>`.
 
 **Not yet run** against a real RFM69, ISS or RFM95, nor joined to The Things Network: the
-LoRaWAN side has only met the simulated server here.
+LoRaWAN side has only met the simulated server here, and the MeshCore node only MeshCore's
+code on a PC and the simulated repeater.

@@ -11,7 +11,7 @@ pull request, newest first.
 
 #### Added
 - A debug log and debug pins for testing on hardware with a logic
-  analyser:
+  analyser ([#24](https://github.com/cgriffis46/Claude-iTransport/pull/24)):
   - `iTransport/itransport/inc/DebugLog.h`: text lines with a sequence
     number and the time on any `iTransport` UART, non-blocking (a ring
     filled under a short lock, so interrupts may log, and sent by

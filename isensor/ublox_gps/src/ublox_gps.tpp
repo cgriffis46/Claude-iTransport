@@ -21,6 +21,7 @@ ublox_gps<TTransport>::ublox_gps(const ublox_gps_param_t& param, TArgs&&... tran
 	  _lastGoodMs(0), _haveData(false), _newData(false) {
 	memset(_tx, 0, sizeof(_tx));
 	if (_param.measRateMs < 25) _param.measRateMs = 25;   // 40 Hz: more than any of them does
+	this->setDebugTag("ublox");
 }
 
 // ---- interrupt side ----
@@ -43,18 +44,26 @@ void ublox_gps<TTransport>::drain(uint32_t nowMs) {
 	_wakePending.store(false, std::memory_order_release);
 	uint8_t b;
 	while (_rx.pop(&b)) handleByte(b, nowMs);
+#if ITRANSPORT_DEBUG
+	const uint32_t lost = _rx.overflows();
+	if (lost != _dbgOverflows) { DBG_FAULT("ublox", "rx-overflow", (int32_t)(lost - _dbgOverflows)); _dbgOverflows = lost; }
+#endif
 }
 
 template <typename TTransport>
 void ublox_gps<TTransport>::handleByte(uint8_t b, uint32_t nowMs) {
 	switch (_ubx.feed(b)) {
 	case ubx::Parser::Result::Consumed:
+		return;
 	case ubx::Parser::Result::Bad:
+		DBG_FAULT("ublox", "ubx-crc", _ubx.cls(), _ubx.id());
 		return;
 	case ubx::Parser::Result::Frame: {
 		bool acked;
 		if (_state == ublox_cfg_wait_state && _ubx.isAckFor(_waitCls, _waitId, &acked)) {
 			_ack = acked ? Ack::Acked : Ack::Refused;
+			if (acked) DBG_EVENT("ublox", "cfg-ack", _waitCls, _waitId);
+			else DBG_FAULT("ublox", "cfg-nak", _waitCls, _waitId);
 		}
 		return;
 	}
@@ -63,7 +72,12 @@ void ublox_gps<TTransport>::handleByte(uint8_t b, uint32_t nowMs) {
 	}
 
 	const NmeaParser::Sentence s = _nmea.feed(b);
-	if (s == NmeaParser::Sentence::None || s == NmeaParser::Sentence::Bad) return;
+	if (s == NmeaParser::Sentence::Bad) {
+		DBG_TRACE("ublox", "nmea-bad", (int32_t)_nmea.stats().checksumErrors, (int32_t)_nmea.stats().malformed);
+		return;
+	}
+	if (s == NmeaParser::Sentence::None) return;
+	DBG_TRACE("ublox", "nmea", (int32_t)s);
 	_lastGoodMs = nowMs;   // any good sentence shows the receiver is there
 	if (s == NmeaParser::Sentence::GGA || s == NmeaParser::Sentence::RMC) {
 		_haveData = true;
@@ -134,15 +148,18 @@ void ublox_gps<TTransport>::main(uint32_t nowMs) {
 		// moves on only after an ACK, which the receiver sends after the
 		// whole message has arrived.
 		if (!nextConfigMessage()) {
+			DBG_EVENT("ublox", "cfg-done");
 			_configStatus = ublox_config_status_t::Done;
 			enter(ublox_listening_state, nowMs);
 			break;
 		}
 		_ack = Ack::Waiting;
 		if (this->write(_tx, _txLen)) {
+			DBG_EVENT("ublox", "cfg-send", _waitCls, _waitId, _cfgStep, _cfgTries);
 			enter(ublox_cfg_wait_state, nowMs);
 		} else if (elapsed(nowMs, ublox_write_timeout_ms)) {
 			// The UART will not take it: carry on unconfigured.
+			DBG_FAULT("ublox", "cfg-uart-busy", _cfgStep);
 			_configStatus = ublox_config_status_t::NoAnswer;
 			enter(ublox_listening_state, nowMs);
 		} else {
@@ -163,6 +180,7 @@ void ublox_gps<TTransport>::main(uint32_t nowMs) {
 				++_cfgResends;
 				enter(ublox_cfg_send_state, nowMs);   // the same message again
 			} else {
+				DBG_FAULT("ublox", "cfg-noanswer", _waitCls, _waitId);
 				_configStatus = ublox_config_status_t::NoAnswer;
 				enter(ublox_listening_state, nowMs);
 			}
@@ -175,6 +193,7 @@ void ublox_gps<TTransport>::main(uint32_t nowMs) {
 
 	case ublox_listening_state:
 		if (nowMs - _lastGoodMs >= _param.silenceMs) {
+			DBG_FAULT("ublox", "silent", (int32_t)(nowMs - _lastGoodMs));
 			fail(nowMs);
 		} else {
 			const uint32_t left = _param.silenceMs - (nowMs - _lastGoodMs);

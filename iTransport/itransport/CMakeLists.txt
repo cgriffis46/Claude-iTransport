@@ -55,6 +55,10 @@ option(ITRANSPORT_BUILD_WIRINGPI
     "Build WiringPiTransportLibrary (Raspberry Pi; needs WIRINGPI_INCLUDE_DIR)" ON)
 option(SENSOR_FW_BUILD_TESTS
     "Build the host tests (no hardware, HAL or RTOS needed)" OFF)
+# The debug log and pins (inc/DebugLog.h): 0 off, 1 faults, 2 + events,
+# 3 + per-transfer trace. PUBLIC, so the drivers built on itransport get
+# the same level.
+set(ITRANSPORT_DEBUG 0 CACHE STRING "Debug log level: 0 off, 1 faults, 2 events, 3 trace")
 
 # --- sensor_transport ----------------------------------------------------
 # I2CTransport/SPITransport are now fully hardware- AND platform-agnostic:
@@ -77,6 +81,8 @@ add_library(sensor_transport STATIC
     inc/iBlockTransport.h
     inc/SpiBlockTransport.h
     src/SpiBlockTransport.cpp
+    inc/DebugLog.h
+    src/DebugLog.cpp
 )
 
 target_include_directories(sensor_transport PUBLIC
@@ -84,6 +90,10 @@ target_include_directories(sensor_transport PUBLIC
 )
 
 target_compile_features(sensor_transport PUBLIC cxx_std_17)
+
+if(NOT ITRANSPORT_DEBUG STREQUAL "0")
+    target_compile_definitions(sensor_transport PUBLIC ITRANSPORT_DEBUG=${ITRANSPORT_DEBUG})
+endif()
 
 set_target_properties(sensor_transport PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${ITRANSPORT_LIB_DIR})
 
@@ -329,6 +339,21 @@ if(SENSOR_FW_BUILD_TESTS)
     add_executable(itransport_test test/itransport_test.cpp)
     target_link_libraries(itransport_test PRIVATE sensor_transport)
     add_test(NAME itransport_test COMMAND itransport_test)
+
+    # The debug log and the bus hooks, always at level 3 (its own copies
+    # of the sources, so the level of sensor_transport doesn't matter),
+    # and debug_log_off.cpp at level 0.
+    add_executable(debug_log_test
+        test/debug_log_test.cpp
+        test/debug_log_off.cpp
+        src/DebugLog.cpp
+        src/BusTransport.cpp
+        src/I2CTransport.cpp
+    )
+    target_include_directories(debug_log_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_definitions(debug_log_test PRIVATE ITRANSPORT_DEBUG=3)
+    target_compile_features(debug_log_test PRIVATE cxx_std_17)
+    add_test(NAME debug_log_test COMMAND debug_log_test)
 
     add_executable(onewire_test test/onewire_test.cpp)
     target_link_libraries(onewire_test PRIVATE sensor_transport)

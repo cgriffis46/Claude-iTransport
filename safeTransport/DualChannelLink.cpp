@@ -1,5 +1,6 @@
 #include "DualChannelLink.h"
 #include "CrcS3.h"
+#include "DebugLog.h"
 
 namespace {
 constexpr uint16_t kCrcSeed = 0xFFFFu;
@@ -49,6 +50,7 @@ void DualChannelLink::poll(uint32_t nowTicks) {
     if (heardAny_ && role_ != Role::Alone &&
         nowTicks - lastGoodTicks_ > config_.timeoutTicks) {
         ++stats_.timeouts;
+        DBG_FAULT("dcl", "timeout", (int32_t)(nowTicks - lastGoodTicks_));
         fault();
         role_ = Role::Alone;
     }
@@ -65,6 +67,7 @@ void DualChannelLink::readQueuedBytes(uint32_t nowTicks) {
         // Bytes were dropped: whatever is half assembled is not to be
         // trusted, and a frame has been lost.
         stats_.rxOverflows += overflows - rxOverflowsSeen_;
+        DBG_FAULT("dcl", "rx-overflow", (int32_t)(overflows - rxOverflowsSeen_));
         rxOverflowsSeen_ = overflows;
         frameLen_ = 0;
         fault();
@@ -108,6 +111,7 @@ void DualChannelLink::tryFrame(uint32_t nowTicks) {
                 return;
             }
             ++stats_.crcErrors;
+            DBG_FAULT("dcl", "crc");
             fault();
             drop = 1;
         }
@@ -121,17 +125,20 @@ void DualChannelLink::acceptFrame(uint16_t seq, uint32_t id, uint8_t flags, uint
     if (id == ownId_) {
         // Our own frames coming back: the link is wired to itself.
         ++stats_.ownIdFrames;
+        DBG_FAULT("dcl", "own-id");
         fault();
         return;
     }
     if (flags & ~kKnownFlags) {
         ++stats_.badFlagFrames;
+        DBG_FAULT("dcl", "bad-flags", flags);
         fault();
         return;
     }
     if (heardAny_ && id != partnerId_) {
         // A different board: start its sequence afresh.
         ++stats_.sequenceErrors;
+        DBG_FAULT("dcl", "new-partner", (int32_t)partnerId_, (int32_t)id);
         fault();
     }
 
@@ -141,6 +148,7 @@ void DualChannelLink::acceptFrame(uint16_t seq, uint32_t id, uint8_t flags, uint
         if (haveSeq_) {
             // A repeat, a gap or a jump back.
             ++stats_.sequenceErrors;
+            DBG_FAULT("dcl", "seq", (uint16_t)(lastSeq_ + 1), seq);
             fault();
         }
         inSequence_ = 1;   // this frame is the new baseline
@@ -174,6 +182,14 @@ void DualChannelLink::fault() {
 
 void DualChannelLink::report() {
     const bool safe = healthy_ && partnerLoopGood_ && partnerHearsUs_;
+#if ITRANSPORT_DEBUG
+    if (safe != dbgSafe_) {
+        // Why, in one line: healthy, its loopback good, it hears us.
+        DBG_EVENT("dcl", "partner", safe ? 1 : 0, healthy_ ? 1 : 0, partnerLoopGood_ ? 1 : 0, partnerHearsUs_ ? 1 : 0);
+        if (!safe) DBG_PULSE(dbg::kPinFault);
+        dbgSafe_ = safe;
+    }
+#endif
     setSafe1State(safe);
     setSafe2State(safe);   // one physical channel: the same on both, as SafeInput describes
 }

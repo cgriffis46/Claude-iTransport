@@ -10,6 +10,24 @@ pull request, newest first.
 ### 2026-10-10
 
 #### Added
+- A debug log and debug pins for testing on hardware with a logic
+  analyser:
+  - `iTransport/itransport/inc/DebugLog.h`: text lines with a sequence
+    number and the time on any `iTransport` UART, non-blocking (a ring
+    filled under a short lock, so interrupts may log, and sent by
+    `dbg::poll()`), dropped lines counted; debug pins through the port.
+    `ITRANSPORT_DEBUG` (CMake) chooses 0 off, 1 faults, 2 events, 3
+    trace; at 0 the macros are empty.
+  - Hooks in `SensorStateMachine` (state changes and failures of every
+    driver, `setDebugTag()`), `BusTransport` (transfers, failures in the
+    interrupt, the transfer and interrupt pins), `ublox_gps` and
+    `mtk3339` (configuration and module events) and `DualChannelLink`
+    (faults and the partner's state).
+  - `hw/stm32/inc/Stm32DebugPort.h`: HAL_GetTick, a PRIMASK lock and
+    BSRR pins.
+  - `tools/saleae/saleae_log.py`: turns Saleae Async Serial and digital
+    CSV exports into one timeline, with dropped lines and faults marked.
+  - Tests `debug_log_test` and `tools/saleae/test_saleae_log.py`.
 - `isensor/mtk3339`: a MediaTek MT3339 GNSS module driver (Adafruit
   Ultimate GPS, GlobalTop PA6H/PA1616S, CDTop), on a UART. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
   - `Pmtk.h`: PMTK314 (sentences), PMTK220 (output interval), PMTK300

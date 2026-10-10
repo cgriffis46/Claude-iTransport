@@ -1,4 +1,5 @@
 #include "BusTransport.h"
+#include "DebugLog.h"
 
 namespace {
     // Maps a bus handle to whichever transport currently has a transfer
@@ -41,15 +42,20 @@ BusTransport::~BusTransport() {
 // Finds the instance currently mid-transfer on this bus and signals it,
 // or lets it start the next part of a transfer made of several.
 void BusTransport::onTransferComplete(void* busHandle, bool failed) {
+    DBG_PULSE(dbg::kPinBusIrq);
     for (size_t i = 0; i < kSlots; ++i) {
         if (s_bus[i].used && s_bus[i].handle == busHandle) {
             BusTransport* active = s_bus[i].active;
             if (active != nullptr && !active->ContinueTransfer(failed)) {
+                if (failed) DBG_FAULT("bus", "xfer-fail", (int32_t)i);
                 active->SignalTransferComplete(failed);
+            } else if (active == nullptr) {
+                DBG_FAULT("bus", "irq-idle", (int32_t)i);   // an interrupt with no transfer of ours in flight
             }
             return;
         }
     }
+    DBG_FAULT("bus", "irq-unknown");   // a handle no transport was made with
 }
 
 void BusTransport::onBusEvent(void* busHandle, uint8_t event) {
@@ -87,9 +93,13 @@ bool BusTransport::WaitForTransfer(uint32_t timeoutTicks) {
 // one onTransferComplete() should signal.
 bool BusTransport::beginTransfer() {
     if (busy_) return false;           // this instance already has an outstanding transfer
-    if (slot_ == kNoSlot) return false; // more buses than kMaxBuses
+    if (slot_ == kNoSlot) {             // more buses than kMaxBuses
+        DBG_FAULT("bus", "no-slot");
+        return false;
+    }
 
     if (!ObtainMutex(kMutexTimeoutTicks)) {
+        DBG_TRACE("bus", "mutex-busy", (int32_t)slot_);
         return false; // bus busy elsewhere; caller's sleep()-then-retry handles this
     }
 
@@ -97,6 +107,7 @@ bool BusTransport::beginTransfer() {
     // real mutex this can't happen (that device still holds it); with
     // the no-op default it is what keeps two devices on one bus apart.
     if (s_bus[slot_].active != nullptr) {
+        DBG_TRACE("bus", "in-use", (int32_t)slot_);
         ReleaseMutex();
         return false;
     }
@@ -111,11 +122,14 @@ bool BusTransport::beginTransfer() {
 // land) or didn't (hand the bus straight back).
 bool BusTransport::endIssue(bool issued) {
     if (!issued) {
+        DBG_TRACE("bus", "not-issued", (int32_t)slot_);
         s_bus[slot_].active = nullptr;
         ReleaseMutex();
         return false;
     }
     busy_ = true;
+    DBG_PIN(dbg::kPinTransfer, true);
+    DBG_TRACE("bus", "start", (int32_t)slot_);
     return true;
 }
 
@@ -131,6 +145,8 @@ bool BusTransport::isBusy() const {
         return true; // not yet — still busy as far as the caller's concerned
     }
 
+    DBG_PIN(dbg::kPinTransfer, false);
+    DBG_TRACE("bus", "done", (int32_t)slot_, failed_ ? 1 : 0);
     self->onTransferLanded();
     self->busy_ = false;
     s_bus[slot_].active = nullptr;

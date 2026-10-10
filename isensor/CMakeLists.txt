@@ -55,6 +55,9 @@ target_include_directories(sensor_state_machine INTERFACE
 
 target_compile_features(sensor_state_machine INTERFACE cxx_std_17)
 
+# For DebugLog.h (the debug hooks), and the ITRANSPORT_DEBUG level.
+target_link_libraries(sensor_state_machine INTERFACE sensor_transport)
+
 # --- sensor_base -------------------------------------------------------
 # SensorBase.h/.cpp only need ISensorTransport.h — not the HAL/RTOS
 # headers directly, since it talks to hardware exclusively through the

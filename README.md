@@ -122,6 +122,15 @@ error state if the transfer is refused, fails or never finishes. The
 between steps, for running it in its own RTOS thread. `lps35hw`,
 `HMC6352`, `mmc56x3` and `lsm303dlhc` are good drivers to copy.
 
+## Debugging on hardware
+
+Build with `-DITRANSPORT_DEBUG=1..3` and every driver logs its state
+changes and faults as text lines on a spare UART, and drives debug pins
+around bus transfers and interrupts, without blocking. Capture both with
+a logic analyser; `tools/saleae/saleae_log.py` turns a Saleae export
+into a timeline. See `iTransport/itransport/inc/DebugLog.h` and
+[CLAUDE.md](CLAUDE.md).
+
 ## Building and testing
 
 Every module builds on its own on a PC:

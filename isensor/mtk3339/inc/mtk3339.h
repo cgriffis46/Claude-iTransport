@@ -41,6 +41,10 @@
  *  silenceMs (the error state, which starts again after
  *  mtk3339_retry_ms).
  *
+ *  Debug log (ITRANSPORT_DEBUG, tag "mtk3339"): cfg-send/cfg-ack/
+ *  cfg-reject/cfg-noanswer/cfg-done with the command, module-start,
+ *  antenna, rx-overflow, silent, and at level 3 every sentence.
+ *
  *  Not run against a module: see Pmtk.h for where the commands come
  *  from.
  */
@@ -193,6 +197,9 @@ private:
 	uint32_t _lastGoodMs;
 	bool     _haveData;
 	bool     _newData;
+#if ITRANSPORT_DEBUG
+	uint32_t _dbgOverflows = 0;
+#endif
 };
 
 #include "../src/mtk3339.tpp"

@@ -3,7 +3,8 @@
  *
  *  An NMEA 0183 parser for GNSS receivers, fed one character at a
  *  time. Pure logic: no transport, HAL or RTOS, no heap, no strtod.
- *  Used by ublox_gps<TTransport>, but works on any receiver's NMEA.
+ *  Used by the GNSS drivers (ublox_gps, mtk3339), and works on any
+ *  receiver's NMEA.
  *
  *      NmeaParser nmea;
  *      for each byte b:  if (nmea.feed(b) == NmeaParser::Sentence::GGA) ...
@@ -13,7 +14,9 @@
  *  talker (GP GPS, GL GLONASS, GA Galileo, GB/BD BeiDou, GQ QZSS, GI
  *  NavIC, GN combined). The extra fields of NMEA 4.10 and 4.11 (RMC's
  *  navigational status, GSA's system ID, GSV's signal ID) are read when
- *  present. Others (TXT, GNS, GST...) are counted and ignored.
+ *  present. Others (TXT, GNS, GST, and proprietary ones such as $PMTK,
+ *  $PGTOP, $PUBX) are returned as Other: a driver reads its own through
+ *  address() and field().
  *
  *  A sentence counts only if it is whole and its checksum matches:
  *  "$" or "!", the fields, "*hh". At most kMaxSentence characters:
@@ -117,6 +120,14 @@ public:
 	const GnssData& data() const { return _data; }
 	const Stats&    stats() const { return _stats; }
 
+	// The sentence feed() last returned as finished and good (any type,
+	// Other included): its address ("GPGGA", "PMTK001") and its fields
+	// (1 is the first after the address). Valid until the next "$"
+	// arrives. field() is false, with an empty string, past the end.
+	void address(const char** s, size_t* len) const { field(0, s, len); }
+	uint8_t fieldCount() const { return _fieldCount; }
+	bool field(uint8_t i, const char** s, size_t* len) const;
+
 	// For a caller that knows the data is stale (a receiver gone
 	// quiet): back to "nothing known", counters kept.
 	void invalidate();
@@ -135,7 +146,6 @@ private:
 
 	Sentence finish();
 	Sentence dispatch();
-	bool field(uint8_t i, const char** s, size_t* len) const;
 	bool parseTime(uint8_t i);
 	bool parseLatLon(uint8_t i);   // fields i..i+3: lat, N/S, lon, E/W
 

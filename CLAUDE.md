@@ -103,19 +103,25 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
 
 ### isensor drivers
 `aht20 bme280 bmp280 DS18B20 HMC6352 htu21df lps35hw lsm303dlhc mmc56x3
-mpl3115a2 PM25 sht31 si7021 ublox_gps`, plus `SensorBase`/`BMP280Sensor`
-(the older style) and `SensorStateMachine`.
+mpl3115a2 PM25 sht31 si7021 ublox_gps mtk3339`, plus `nmea` (what the
+GNSS drivers share), `SensorBase`/`BMP280Sensor` (the older style) and
+`SensorStateMachine`.
 
-`ublox_gps/`: a u-blox GNSS receiver on a UART (`iTransport`).
-- `NmeaParser` (pure logic, header-only like the drivers): one character
+GNSS receivers on a UART (`iTransport`): `nmea/` holds what they share,
+`ublox_gps/` and `mtk3339/` one driver each, built the same way.
+- `nmea/NmeaParser` (pure logic, header-only like the drivers): one character
   at a time, checksum required, GGA RMC GLL VTG GSA GSV ZDA from any
   talker (GP GL GA GB/BD GQ GI GN), NMEA 4.10 fields (RMC nav status,
   GSA system ID, GSV signal ID). Position in 1e-7 degrees by integer
   arithmetic (no float loss, no double); empty fields NAN or invalid. A
   sentence is taken whole or not at all (fields before the satellites
   saved and put back; GSV checks first). Up to 96 characters: u-blox's
-  high precision mode goes past NMEA's 82.
-- `UbxProtocol.h`: UBX frames, Fletcher checksum, ACK/NAK, `cfgMsg`,
+  high precision mode goes past NMEA's 82. Proprietary sentences
+  (`$PMTK`, `$PGTOP`, `$PUBX`) come back as `Other`, read through
+  `address()`/`field()` (valid until the next "$").
+- `nmea/ByteRing<N>`: the interrupt -> thread ring both drivers use
+  (atomic load/store only).
+- `ublox_gps/UbxProtocol.h`: UBX frames, Fletcher checksum, ACK/NAK, `cfgMsg`,
   `cfgRate` (u-blox 6-8) and `ValSet` (CFG-VALSET, RAM layer, u-blox
   9-10). Numbers from Zephyr's and SparkFun's u-blox code, which agree;
   u-blox's PDFs could not be downloaded here.
@@ -132,6 +138,23 @@ mpl3115a2 PM25 sht31 si7021 ublox_gps`, plus `SensorBase`/`BMP280Sensor`
   quoted UBX "GLL off" `FB 11` / "5 Hz" `DE 6A` as outside checks) and
   `ublox_gps_test` (a simulated generation 8 or 10 receiver: ACK/NAK,
   rates applied, NMEA at the set rate and baud).
+- `mtk3339<TTransport>` (MediaTek MT3339: Adafruit Ultimate GPS,
+  GlobalTop PA6H/PA1616S, CDTop): `mtk3339_param_t(configure)`; sends
+  PMTK314 (sentences; ZDA is field 17), PMTK220 (output, 100-10000 ms)
+  and PMTK300 (fix, never under 200 ms: 5 Hz is the chip's limit), each
+  waiting for `$PMTK001,cmd,3` (3 tries, 1 s); another flag sets
+  `configStatus()` Rejected with `configFlag()`/`configCommand()`, and
+  it carries on. `$PMTK010,001` (the module started: settings may be
+  gone) makes it configure again. `antennaStatus` sends `$PGCMD,33,1`
+  (no answer expected, own buffer) and reads `$PGTOP,11,x` (1 shorted,
+  2 internal, 3 external) or CDTop's `$PCD,11,x` (1 internal, 2
+  external, 3 shorted). No baud change (PMTK251): RMC+GGA at 5 Hz is
+  about the limit at 9600. Commands built without printf (`pmtk::Body`).
+  PMTK strings and checksums from Adafruit_GPS (the test checks them),
+  PMTK314's field order from Adafruit's CircuitPython GPS docs, the
+  PMTK001 flags from MediaTek's manual (3 = success seen in one other
+  source only). `mtk3339_test`: a simulated module that ignores input
+  while booting, announces itself, applies and ACKs, can answer late.
 
 ### iDisplay
 - `display_core` (`inc/`, `src/`): `iTextSurface` (character cells and
@@ -451,7 +474,7 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
 ```
 
-Last known results: isensor 23 tests (its 14 drivers, two for ublox_gps, plus itransport's
+Last known results: isensor 24 tests (its 15 drivers plus nmea_parser_test, plus itransport's
 tests), iTransport 8, iNetTransport 24 without the optional source
 trees (27 before the two Pico tests, with LWIP_DIR, MBEDTLS_DIR,
 LITTLEFS_DIR and FATFS_DIR),
@@ -605,6 +628,8 @@ STM32L432KC (L4).
     meant "my loopback is complete".
 25. NMEA parser and u-blox GNSS driver (`isensor/ublox_gps`), configured
     over UBX (CFG-MSG/CFG-RATE or CFG-VALSET).
+26. MediaTek MT3339 GNSS driver (`isensor/mtk3339`, PMTK commands); the
+    NMEA parser and a shared `ByteRing` moved to `isensor/nmea`.
 
 ## Open items
 
@@ -628,8 +653,9 @@ STM32L432KC (L4).
 - `ublox_gps`: not run against a receiver; UBX numbers not checked
   against u-blox's own documents. No baud rate change (CFG-PRT /
   CFG-UART1-BAUDRATE), no UBX-NAV-PVT, no other makers' setup commands
-  (MediaTek PMTK, Quectel). Not yet in STM32_Static_Lib_Src's sync
-  script `SENSORS` list.
+  (Quectel).
+- `mtk3339`: not run against a module. No baud rate change (PMTK251),
+  no LOCUS logging, standby or firmware query (PMTK605).
 - The STM32CubeIDE projects were checked with arm-none-eabi-gcc using
   their `.cproject` settings, but have not been opened in CubeIDE.
 - CIP Safety, highest priority (the owner is getting official ODVA

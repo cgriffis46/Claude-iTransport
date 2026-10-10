@@ -52,6 +52,7 @@ inline NmeaParser::Sentence NmeaParser::feed(uint8_t c) {
 		// A new sentence. One still open lost its end.
 		const bool cutShort = _len > 0;
 		_len = 0;
+		_fieldCount = 0;   // the last sentence's fields go with its text
 		_overflow = false;
 		_buf[_len++] = (char)c;
 		if (cutShort) { ++_stats.malformed; return Sentence::Bad; }

@@ -10,6 +10,17 @@ pull request, newest first.
 ### 2026-10-10
 
 #### Added
+- `isensor/mtk3339`: a MediaTek MT3339 GNSS module driver (Adafruit
+  Ultimate GPS, GlobalTop PA6H/PA1616S, CDTop), on a UART. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
+  - `Pmtk.h`: PMTK314 (sentences), PMTK220 (output interval), PMTK300
+    (fix interval) and GlobalTop's `$PGCMD,33` antenna report, built
+    without printf.
+  - `mtk3339<TTransport>` and `xmtk3339` (CMSIS-RTOS2): waits for each
+    `$PMTK001` and reports a refusal or no answer while carrying on,
+    configures again when the module announces a restart
+    (`$PMTK010,001`), reads the antenna status (`$PGTOP` or `$PCD`), and
+    invalidates the data when the module falls silent.
+  - Host test `mtk3339_test` (a simulated module).
 - `isensor/ublox_gps`: an NMEA 0183 parser and a u-blox GNSS receiver
   driver on a UART ([#22](https://github.com/cgriffis46/Claude-iTransport/pull/22)).
   - `NmeaParser`: byte at a time, checksum required, GGA, RMC, GLL, VTG,
@@ -26,6 +37,15 @@ pull request, newest first.
     again when the receiver falls silent.
   - Host tests `nmea_parser_test` and `ublox_gps_test` (a simulated
     receiver).
+
+#### Changed
+- `NmeaParser` moved from `isensor/ublox_gps` to `isensor/nmea`, shared
+  by both GNSS drivers, with `ByteRing` (the interrupt-to-thread ring,
+  taken out of `ublox_gps`) and its own test. It now gives a
+  proprietary sentence's address and fields to the driver. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
+  `ublox_gps_test` took over the UBX framing tests.
+- `CLAUDE.md`: `ublox_gps` is now in STM32_Static_Lib_Src's sync script
+  and its iSensor projects' include paths, so that open item is gone. ([#23](https://github.com/cgriffis46/Claude-iTransport/pull/23))
 
 ### 2026-10-09
 

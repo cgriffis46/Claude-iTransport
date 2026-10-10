@@ -11,7 +11,7 @@ pull request, newest first.
 
 #### Added
 - An RFM95W / SX1276 LoRa radio driver and the AES used by LoRaWAN, in
-  `iRadio`:
+  `iRadio` ([#25](https://github.com/cgriffis46/Claude-iTransport/pull/25)):
   - `rfm95/`: `rfm95<TTransport>` (non-blocking, header only) and
     `xrfm95` (CMSIS-RTOS2): transmit, RX single (a symbol timeout) and
     RX continuous, each request with its own frequency, spreading

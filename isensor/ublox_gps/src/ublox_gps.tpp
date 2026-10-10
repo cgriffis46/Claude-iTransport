@@ -15,11 +15,10 @@ template <typename TTransport>
 template <typename... TArgs>
 ublox_gps<TTransport>::ublox_gps(const ublox_gps_param_t& param, TArgs&&... transportArgs)
 	: base(ublox_init_state, ublox_error_state, 0, std::forward<TArgs>(transportArgs)...),
-	  _param(param), _head(0), _tail(0), _overflows(0), _wakePending(false), _sinceWake(0),
+	  _param(param), _wakePending(false), _sinceWake(0),
 	  _txLen(0), _cfgStep(0), _cfgTries(0), _waitCls(0), _waitId(0), _ack(Ack::Waiting),
 	  _configStatus(ublox_config_status_t::NotDone), _cfgResends(0),
 	  _lastGoodMs(0), _haveData(false), _newData(false) {
-	memset(_ring, 0, sizeof(_ring));
 	memset(_tx, 0, sizeof(_tx));
 	if (_param.measRateMs < 25) _param.measRateMs = 25;   // 40 Hz: more than any of them does
 }
@@ -28,16 +27,7 @@ ublox_gps<TTransport>::ublox_gps(const ublox_gps_param_t& param, TArgs&&... tran
 
 template <typename TTransport>
 void ublox_gps<TTransport>::onByteReceived(uint8_t byte) {
-	const uint32_t head = _head.load(std::memory_order_relaxed);
-	const uint32_t tail = _tail.load(std::memory_order_acquire);
-	if (head - tail >= kRxRingSize) {
-		// Only this interrupt writes the counter: a load and a store,
-		// no read-modify-write, so it needs nothing a Cortex-M0 lacks.
-		_overflows.store(_overflows.load(std::memory_order_relaxed) + 1, std::memory_order_release);
-		return;
-	}
-	_ring[head & (kRxRingSize - 1)] = byte;
-	_head.store(head + 1, std::memory_order_release);
+	if (!_rx.push(byte)) return;   // full: dropped and counted
 
 	if (byte == '\n' || ++_sinceWake >= 64) {
 		_sinceWake = 0;
@@ -51,14 +41,8 @@ void ublox_gps<TTransport>::onByteReceived(uint8_t byte) {
 template <typename TTransport>
 void ublox_gps<TTransport>::drain(uint32_t nowMs) {
 	_wakePending.store(false, std::memory_order_release);
-	uint32_t       tail = _tail.load(std::memory_order_relaxed);
-	const uint32_t head = _head.load(std::memory_order_acquire);
-	while (tail != head) {
-		const uint8_t b = _ring[tail & (kRxRingSize - 1)];
-		++tail;
-		_tail.store(tail, std::memory_order_release);
-		handleByte(b, nowMs);
-	}
+	uint8_t b;
+	while (_rx.pop(&b)) handleByte(b, nowMs);
 }
 
 template <typename TTransport>
@@ -238,7 +222,7 @@ bool ublox_gps<TTransport>::position(int32_t* latE7, int32_t* lonE7) const {
 template <typename TTransport>
 typename ublox_gps<TTransport>::Stats ublox_gps<TTransport>::stats() const {
 	Stats s;
-	s.rxOverflows = _overflows.load(std::memory_order_acquire);
+	s.rxOverflows = _rx.overflows();
 	s.ubxFrames = _ubx.frames();
 	s.ubxErrors = _ubx.errors();
 	s.cfgResends = _cfgResends;

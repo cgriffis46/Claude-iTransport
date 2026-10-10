@@ -29,8 +29,8 @@
  *  GGA+RMC+GSA+GSV fit about 1 Hz).
  *
  *  The work is in two halves, as in PM25. onByteReceived() runs in the
- *  UART interrupt and only puts the byte in a ring buffer (single
- *  producer, single consumer, atomic indices). main() takes the bytes
+ *  UART interrupt and only puts the byte in a ring buffer (ByteRing,
+ *  in isensor/nmea with the parser). main() takes the bytes
  *  out, splits UBX frames from NMEA sentences, and parses them; the
  *  parsing is never done in the interrupt.
  *
@@ -55,6 +55,7 @@
 #include <utility>
 #include "iTransport.h"
 #include "SensorStateMachine.h"
+#include "ByteRing.h"
 #include "NmeaParser.h"
 #include "UbxProtocol.h"
 
@@ -167,11 +168,7 @@ private:
 	NmeaParser  _nmea;
 	ubx::Parser _ubx;
 
-	// Interrupt -> main() ring.
-	uint8_t               _ring[kRxRingSize];
-	std::atomic<uint32_t> _head;          // written by the interrupt only
-	std::atomic<uint32_t> _tail;          // written by main() only
-	std::atomic<uint32_t> _overflows;     // written by the interrupt only
+	ByteRing<kRxRingSize> _rx;            // interrupt -> main()
 	std::atomic<bool>     _wakePending;
 	uint8_t               _sinceWake;     // interrupt only
 

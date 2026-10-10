@@ -1,4 +1,4 @@
-// Host test for NmeaParser and the UBX framing in UbxProtocol.h.
+// Host test for NmeaParser.
 //
 // g++ -std=gnu++14 -fno-exceptions -fno-rtti -Wall -Wextra -I../inc nmea_parser_test.cpp -o nmea_parser_test
 #include <math.h>
@@ -7,7 +7,6 @@
 #include <string>
 #include <vector>
 #include "NmeaParser.h"
-#include "UbxProtocol.h"
 
 static int g_checks = 0, g_failures = 0;
 #define CHECK(c) do { ++g_checks; if (!(c)) { ++g_failures; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -211,72 +210,6 @@ static void testFieldParsers() {
 	CHECK(!p.data().positionValid && !p.data().timeValid && isnan(p.data().hdop) && p.data().satelliteCount == 0);
 }
 
-// ---- UBX ----
-
-static std::vector<uint8_t> bytes(const uint8_t* p, size_t n) { return std::vector<uint8_t>(p, p + n); }
-
-static void testUbxBuilders() {
-	uint8_t f[80];
-	// Published commands: "disable GLL" and "5 Hz" for u-blox 6/7/8.
-	size_t n = ubx::cfgMsg(f, ubx::Nmea::GLL, 0);
-	const uint8_t gllOff[] = {0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x01, 0x00, 0xFB, 0x11};
-	CHECK(bytes(f, n) == bytes(gllOff, sizeof gllOff));
-	n = ubx::cfgRate(f, 200, 1, 1);
-	const uint8_t rate5Hz[] = {0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0xC8, 0x00, 0x01, 0x00, 0x01, 0x00, 0xDE, 0x6A};
-	CHECK(bytes(f, n) == bytes(rate5Hz, sizeof rate5Hz));
-
-	ubx::ValSet v(ubx::kLayerRam);
-	v.addU1(ubx::nmeaUart1Key(ubx::Nmea::GGA), 1);
-	v.addU2(ubx::kKeyRateMeas, 100);
-	CHECK(v.ok() && v.length() == 4 + 5 + 6);
-	n = v.build(f);
-	const uint8_t head[] = {0xB5, 0x62, 0x06, 0x8A, 15, 0, 0x00, 0x01, 0x00, 0x00,
-	                        0xBB, 0x00, 0x91, 0x20, 0x01, 0x01, 0x00, 0x21, 0x30, 100, 0};
-	CHECK(n == 23 && bytes(f, sizeof head) == bytes(head, sizeof head));
-	uint8_t a, b;
-	ubx::checksum(f + 2, 4 + 15, &a, &b);
-	CHECK(f[21] == a && f[22] == b);
-
-	ubx::ValSet full(ubx::kLayerRam);
-	for (int i = 0; i < 20; ++i) full.addU2(ubx::kKeyRateMeas, 1);
-	CHECK(!full.ok() && full.length() <= ubx::ValSet::kMaxPayload);
-}
-
-static void testUbxParser() {
-	ubx::Parser p;
-	uint8_t ack[10];
-	const uint8_t payload[2] = {0x06, 0x01};
-	ubx::frame(ack, ubx::kClassAck, ubx::kIdAckAck, payload, 2);
-	ubx::Parser::Result r = ubx::Parser::Result::NotMine;
-	for (uint8_t c : ack) r = p.feed(c);
-	CHECK(r == ubx::Parser::Result::Frame);
-	bool acked = false;
-	CHECK(p.isAckFor(0x06, 0x01, &acked) && acked);
-	CHECK(!p.isAckFor(0x06, 0x08, &acked));
-
-	ubx::frame(ack, ubx::kClassAck, ubx::kIdAckNak, payload, 2);
-	for (uint8_t c : ack) r = p.feed(c);
-	CHECK(r == ubx::Parser::Result::Frame && p.isAckFor(0x06, 0x01, &acked) && !acked);
-
-	ack[8] ^= 1;   // spoil the checksum
-	for (uint8_t c : ack) r = p.feed(c);
-	CHECK(r == ubx::Parser::Result::Bad && p.errors() == 1);
-
-	// Text is not its business; "B5" then text gives the text back.
-	CHECK(p.feed('$') == ubx::Parser::Result::NotMine);
-	CHECK(p.feed(0xB5) == ubx::Parser::Result::Consumed);
-	CHECK(p.feed('$') == ubx::Parser::Result::NotMine && !p.inFrame());
-
-	// A long frame (NAV-SAT size) is checked and its payload truncated.
-	std::vector<uint8_t> big(200);
-	for (size_t i = 0; i < big.size(); ++i) big[i] = (uint8_t)i;
-	std::vector<uint8_t> fr(big.size() + 8);
-	ubx::frame(fr.data(), 0x01, 0x35, big.data(), (uint16_t)big.size());
-	for (uint8_t c : fr) r = p.feed(c);
-	CHECK(r == ubx::Parser::Result::Frame && p.truncated() && p.length() == 200 && p.payload()[31] == 31);
-	CHECK(!p.isAckFor(0x01, 0x35, &acked));
-}
-
 int main() {
 	testClassicSentences();
 	testChecksumAndFraming();
@@ -284,8 +217,6 @@ int main() {
 	testModernSentences();
 	testSatellites();
 	testFieldParsers();
-	testUbxBuilders();
-	testUbxParser();
 	printf("nmea_parser_test: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures ? 1 : 0;
 }

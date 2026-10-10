@@ -169,6 +169,7 @@ endif()
 # One folder each, with its own CMakeLists.txt defining <name>_sensor.
 foreach(sensor_dir
         aht20 bme280 bmp280 DS18B20 HMC6352 htu21df
-        lps35hw lsm303dlhc mmc56x3 mpl3115a2 PM25 sht31 si7021 ublox_gps)
+        lps35hw lsm303dlhc mmc56x3 mpl3115a2 PM25 sht31 si7021
+        nmea ublox_gps mtk3339)
     add_subdirectory(${sensor_dir})
 endforeach()

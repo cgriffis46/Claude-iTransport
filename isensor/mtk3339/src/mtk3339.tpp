@@ -24,6 +24,7 @@ mtk3339<TTransport>::mtk3339(const mtk3339_param_t& param, TArgs&&... transportA
 	pmtk::antennaStatus(_txAntenna, sizeof(_txAntenna), true);
 	if (_param.updateMs < pmtk::kMinUpdateMs) _param.updateMs = pmtk::kMinUpdateMs;
 	if (_param.updateMs > pmtk::kMaxUpdateMs) _param.updateMs = pmtk::kMaxUpdateMs;
+	this->setDebugTag("mtk3339");
 }
 
 // ---- interrupt side ----
@@ -46,7 +47,12 @@ void mtk3339<TTransport>::drain(uint32_t nowMs) {
 	uint8_t b;
 	while (_rx.pop(&b)) {
 		const NmeaParser::Sentence s = _nmea.feed(b);
-		if (s == NmeaParser::Sentence::None || s == NmeaParser::Sentence::Bad) continue;
+		if (s == NmeaParser::Sentence::Bad) {
+			DBG_TRACE("mtk3339", "nmea-bad", (int32_t)_nmea.stats().checksumErrors, (int32_t)_nmea.stats().malformed);
+			continue;
+		}
+		if (s == NmeaParser::Sentence::None) continue;
+		DBG_TRACE("mtk3339", "nmea", (int32_t)s);
 		_lastGoodMs = nowMs;   // any good sentence shows the module is there
 		if (s == NmeaParser::Sentence::GGA || s == NmeaParser::Sentence::RMC) {
 			_haveData = true;
@@ -55,6 +61,10 @@ void mtk3339<TTransport>::drain(uint32_t nowMs) {
 			proprietary(nowMs);
 		}
 	}
+#if ITRANSPORT_DEBUG
+	const uint32_t lost = _rx.overflows();
+	if (lost != _dbgOverflows) { DBG_FAULT("mtk3339", "rx-overflow", (int32_t)(lost - _dbgOverflows)); _dbgOverflows = lost; }
+#endif
 }
 
 static inline bool mtk3339Is(const char* s, size_t n, const char* want) {
@@ -78,15 +88,20 @@ void mtk3339<TTransport>::proprietary(uint32_t nowMs) {
 		// $PMTK001,cmd,flag: the answer to a command.
 		if (num1 && num2 && _state == mtk3339_cfg_wait_state && v1 == _waitCmd) {
 			if (v2 == (uint32_t)pmtk::AckFlag::Succeeded) {
+				DBG_EVENT("mtk3339", "cfg-ack", (int32_t)v1);
 				_ack = Ack::Acked;
 			} else {
+				DBG_FAULT("mtk3339", "cfg-reject", (int32_t)v1, (int32_t)v2);
 				_rejectFlag = (pmtk::AckFlag)(v2 > 3 ? 0 : v2);
 				_ack = Ack::Refused;
 			}
 		}
 	} else if (mtk3339Is(a, na, "PMTK010")) {
 		// $PMTK010,001: the module has just started.
-		if (num1 && v1 == pmtk::kSystemStartup) _restartSeen = true;
+		if (num1 && v1 == pmtk::kSystemStartup) {
+			DBG_EVENT("mtk3339", "module-start");
+			_restartSeen = true;
+		}
 	} else if (mtk3339Is(a, na, "PGTOP") || mtk3339Is(a, na, "PCD")) {
 		// $PGTOP,11,x: 1 shorted, 2 internal, 3 external (GlobalTop).
 		// $PCD,11,x:   1 internal, 2 external, 3 shorted (CDTop).
@@ -96,7 +111,11 @@ void mtk3339<TTransport>::proprietary(uint32_t nowMs) {
 			                                       mtk3339_antenna_t::Internal, mtk3339_antenna_t::External};
 			static const mtk3339_antenna_t ct[] = {mtk3339_antenna_t::Unknown, mtk3339_antenna_t::Internal,
 			                                       mtk3339_antenna_t::External, mtk3339_antenna_t::Shorted};
-			if (v2 <= 3) _antenna = cd ? ct[v2] : gt[v2];
+			if (v2 <= 3) {
+				const mtk3339_antenna_t a2 = cd ? ct[v2] : gt[v2];
+				if (a2 != _antenna) DBG_EVENT("mtk3339", "antenna", (int32_t)a2);
+				_antenna = a2;
+			}
 		}
 	}
 }
@@ -173,14 +192,17 @@ void mtk3339<TTransport>::main(uint32_t nowMs) {
 		// Built again on every pass until write() takes it; the bytes
 		// are the same each time, since the step has not moved on.
 		if (!nextCommand()) {
+			DBG_EVENT("mtk3339", "cfg-done");
 			_configStatus = mtk3339_config_status_t::Done;
 			enter(mtk3339_listening_state, nowMs);
 			break;
 		}
 		_ack = Ack::Waiting;
 		if (this->write((const uint8_t*)_tx, _txLen)) {
+			DBG_EVENT("mtk3339", "cfg-send", _waitCmd, _cfgStep, _cfgTries);
 			enter(mtk3339_cfg_wait_state, nowMs);
 		} else if (elapsed(nowMs, mtk3339_write_timeout_ms)) {
+			DBG_FAULT("mtk3339", "cfg-uart-busy", _waitCmd);
 			_configStatus = mtk3339_config_status_t::NoAnswer;
 			enter(mtk3339_listening_state, nowMs);
 		} else {
@@ -201,6 +223,7 @@ void mtk3339<TTransport>::main(uint32_t nowMs) {
 				++_cfgResends;
 				enter(mtk3339_cfg_send_state, nowMs);   // the same command again
 			} else {
+				DBG_FAULT("mtk3339", "cfg-noanswer", _waitCmd);
 				_configStatus = mtk3339_config_status_t::NoAnswer;
 				enter(mtk3339_listening_state, nowMs);
 			}
@@ -213,6 +236,7 @@ void mtk3339<TTransport>::main(uint32_t nowMs) {
 
 	case mtk3339_listening_state:
 		if (nowMs - _lastGoodMs >= _param.silenceMs) {
+			DBG_FAULT("mtk3339", "silent", (int32_t)(nowMs - _lastGoodMs));
 			fail(nowMs);
 		} else {
 			const uint32_t left = _param.silenceMs - (nowMs - _lastGoodMs);

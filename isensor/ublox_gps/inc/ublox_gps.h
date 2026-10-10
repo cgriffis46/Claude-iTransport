@@ -41,6 +41,10 @@
  *  silenceMs (the error state, which starts again after
  *  ublox_retry_ms, configuring again).
  *
+ *  Debug log (ITRANSPORT_DEBUG, tag "ublox"): cfg-send/cfg-ack/cfg-nak/
+ *  cfg-noanswer/cfg-done with class and id, ubx-crc, rx-overflow,
+ *  silent, and at level 3 every sentence (nmea, nmea-bad).
+ *
  *  Not run against a receiver: the UBX numbers come from Zephyr's and
  *  SparkFun's u-blox code (see UbxProtocol.h).
  */
@@ -185,6 +189,9 @@ private:
 	uint32_t _lastGoodMs;
 	bool     _haveData;
 	bool     _newData;
+#if ITRANSPORT_DEBUG
+	uint32_t _dbgOverflows = 0;
+#endif
 };
 
 #include "../src/ublox_gps.tpp"

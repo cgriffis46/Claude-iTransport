@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include "DebugLog.h"
 #include "SafeInput.h"
 #include "iTransport.h"
 
@@ -60,6 +61,11 @@
 // indices, load and store only, so it also suits a Cortex-M0).
 // Everything else, including the Safe callbacks, runs in poll() in the
 // caller's task. A full ring counts as a lost frame.
+//
+// Debug log (ITRANSPORT_DEBUG, tag "dcl"): every fault (timeout,
+// rx-overflow, crc, own-id, bad-flags, new-partner, seq with the
+// expected and received numbers), and "partner <safe> <healthy>
+// <loopback> <hears-us>" whenever the partner's channel changes.
 //
 // Timing: everything is in the caller's ticks. To meet a 4.17 ms
 // response (1/4 cycle at 60 Hz) with 1 ms ticks, poll() every tick,
@@ -177,4 +183,7 @@ private:
     uint32_t lastSendTicks_ = 0;
 
     Stats stats_;
+#if ITRANSPORT_DEBUG
+    bool dbgSafe_ = false;   // the last state the debug log reported
+#endif
 };

@@ -70,6 +70,8 @@ arduino and linux. Sources use flat `#include "Foo.h"`; each folder's
   `iBlockTransport` (SPI block/DMA, used by the W5500).
 - Bus classes: `BusTransport`, `I2CTransport`, `SPITransport`,
   `SpiBlockTransport`, `OneWireUartTransport`.
+- `DebugLog.h` / `src/DebugLog.cpp`: the debug log and debug pins for
+  testing on hardware (see "Debugging on hardware" below).
 - `iClock` (`inc/iClock.h`): a free running counter (`ticksPerSecond()`,
   `now()`, ISR-safe). `hw/stm32/Stm32RtcClock`: the RTC (LSE) as one,
   `PREDIV_S + 1` ticks a second, from SSR/TR/DR read with interrupts
@@ -417,6 +419,55 @@ Safety Supervisor ≈195+). Vol. 2 (EtherNet/IP) was not available.
   `StorageWeb_test --serve 120` plus `storage/test/files_ui_test.cjs`
   drives `/files.html` in Chromium.
 
+## Debugging on hardware
+
+The owner captures with a Saleae logic analyser and sends the CSV
+exports; `tools/saleae/saleae_log.py` turns them into a timeline.
+
+- `itransport/inc/DebugLog.h`: text lines `<seq> <ms> <tag> <what>
+  [<value>...]` on any `iTransport` UART, and debug pins through the
+  port. A log call formats on the stack (no printf), copies into a ring
+  (`ITRANSPORT_DEBUG_RING`, 1 KB) under the port's lock and returns, so
+  interrupts may log; `dbg::poll()` (idle loop or a low priority task)
+  hands the ring to the UART, two 128 byte buffers in turn. A full ring
+  drops lines and counts them; the seq gap shows it.
+- `ITRANSPORT_DEBUG` (CMake cache variable, PUBLIC on sensor_transport):
+  0 off (every macro empty, arguments not evaluated), 1 faults
+  (`DBG_FAULT`, `DBG_PIN`/`DBG_PULSE`), 2 + events (`DBG_EVENT`: state
+  changes, configuration), 3 + per-transfer trace (`DBG_TRACE`). Define
+  it the same in the libraries and the application (in CubeIDE, the
+  iTransport library project and the application): `DualChannelLink`'s
+  layout and the bus hooks depend on it. `dbg::begin()` pulls in about
+  1.3 KB of RAM even at 0; guard it with `#if ITRANSPORT_DEBUG`.
+- Hooks so far: `SensorStateMachine` (every driver: `st <from> <to>`,
+  `fail`, `bus-err`, `issue-timeout`, `land-timeout`; tag "ssm" until
+  `setDebugTag()`), `BusTransport` ("bus": start/done/mutex-busy/in-use/
+  not-issued at 3, xfer-fail/irq-idle/irq-unknown/no-slot), ublox_gps
+  and mtk3339 (cfg-send/ack/nak/reject/noanswer/done, module-start,
+  antenna, rx-overflow, silent; every sentence at 3), `DualChannelLink`
+  ("dcl": every fault, and `partner <safe> <healthy> <loopback>
+  <hears-us>` on change). `tools/saleae/saleae_log.py --faults` knows
+  the fault names; add new ones there.
+- Pins (`dbg::DbgPin`): 0 pulsed in the bus completion interrupt, 1 high
+  while a bus transfer is in flight (one pin for every bus), 2 pulsed
+  on a state change, 3 pulsed on a fault; 4 and up the application's.
+- STM32: `hw/stm32/inc/Stm32DebugPort.h` (HAL_GetTick, PRIMASK lock,
+  BSRR pins). On the Nucleo-L432KC, USART2 TX is PA2, which is also the
+  ST-LINK virtual COM port (from the Nucleo-32 manual, not checked
+  here): log there at 921600 8N1 and clip the analyser on PA2. Pins:
+  any four free GPIOs, push-pull, very high speed, chosen in CubeMX.
+  Sample at 10x the baud rate or more (general knowledge).
+- Saleae: Async Serial analyser on the TX channel (921600, 8 bits, no
+  parity, 1 stop, LSB first), display radix hex, export the table as
+  CSV; export the digital channels as CSV for the pins; then
+  `python3 tools/saleae/saleae_log.py --serial s.csv --digital d.csv
+  --pins "0=bus-irq,1=transfer,2=state,3=fault"`. The CSV formats it
+  reads are from memory of Saleae's documentation: check them against
+  the first real export.
+- Tests: `itransport/test/debug_log_test.cpp` (level 3, with
+  `debug_log_off.cpp` at 0) and `tools/saleae/test_saleae_log.py`
+  (made-up exports).
+
 ## How a sensor driver is written
 
 Follow an existing driver (`lps35hw` for registers, `HMC6352` for
@@ -474,15 +525,16 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
       -DITRANSPORT_BUILD_WIRINGPI=OFF -DSENSOR_FW_BUILD_TESTS=ON   # davis tests
 ```
 
-Last known results: isensor 24 tests (its 15 drivers plus nmea_parser_test, plus itransport's
-tests), iTransport 8, iNetTransport 24 without the optional source
+Last known results: isensor 25 tests (its 15 drivers plus nmea_parser_test, plus itransport's
+9), iTransport 9, iNetTransport 25 without the optional source
 trees (27 before the two Pico tests, with LWIP_DIR, MBEDTLS_DIR,
 LITTLEFS_DIR and FATFS_DIR),
-PLCTransport 3 (with MBEDTLS_DIR), safeTransport 9
-(dual_channel_link_test and itransport's 8),
-iDisplay 11 (ssd1306_test,
-hd44780_test, gui_test and itransport's 8), iRadio 11 (davis_test,
-davis_rfm69_test, xdavis_rfm69_test and itransport's 8), all passing. Each test file also
+PLCTransport 3 (with MBEDTLS_DIR), safeTransport 10
+(dual_channel_link_test and itransport's 9),
+iDisplay 12 (ssd1306_test,
+hd44780_test, gui_test and itransport's 9), iRadio 12 (davis_test,
+davis_rfm69_test, xdavis_rfm69_test and itransport's 9), all passing,
+at ITRANSPORT_DEBUG 0 and 3. `python3 tools/saleae/test_saleae_log.py`: 5. Each test file also
 has a one-line `g++` build command in its header.
 
 `SENSOR_FW_HARDWARE` is `STM32` (default; needs `CMSIS_RTOS_INCLUDE_DIR`,
@@ -630,6 +682,10 @@ STM32L432KC (L4).
     over UBX (CFG-MSG/CFG-RATE or CFG-VALSET).
 26. MediaTek MT3339 GNSS driver (`isensor/mtk3339`, PMTK commands); the
     NMEA parser and a shared `ByteRing` moved to `isensor/nmea`.
+27. Debug log and pins for hardware testing with a Saleae (`DebugLog.h`,
+    `Stm32DebugPort.h`, `tools/saleae/saleae_log.py`), hooked into
+    SensorStateMachine, BusTransport, the GNSS drivers and
+    DualChannelLink.
 
 ## Open items
 

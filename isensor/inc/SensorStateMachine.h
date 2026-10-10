@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <utility>
+#include "DebugLog.h"
 
 // The part of a non-blocking sensor driver that is the same for every
 // sensor: which state it is in and when it got there, the sleep()
@@ -39,6 +40,13 @@
 // issued(), landed(), finished() and errorCleared() are compiled only
 // where a driver calls them, so the transport need not have isBusy().
 //
+// Debugging on hardware (itransport's DebugLog.h, ITRANSPORT_DEBUG):
+// every state change is logged as "<tag> st <from> <to>" with a pulse on
+// dbg::kPinState, every failure as "<tag> fail <state>" (with the cause,
+// "bus-err" or "timeout", just before it) and a pulse on dbg::kPinFault.
+// The numbers are the driver's state enum. setDebugTag() names the
+// driver in the log ("ssm" until it is set); a no-op when the log is off.
+//
 // Not to be confused with SensorBase, the older base class in this
 // folder. SensorBase holds a reference to an ISensorTransport and
 // runs one fixed sequence of states that a sensor customises through
@@ -49,6 +57,16 @@ template <typename TTransport, typename TState>
 class SensorStateMachine : protected TTransport {
 public:
     TState state() const { return _state; }
+
+    // The name this driver has in the debug log. A string literal, or
+    // anything that outlives the driver.
+    void setDebugTag(const char* tag) {
+#if ITRANSPORT_DEBUG
+        _dbgTag = tag;
+#else
+        (void)tag;
+#endif
+    }
 
 protected:
     // initState: where main() starts. errorState: where fail() goes.
@@ -67,6 +85,10 @@ protected:
     virtual void sleep(uint32_t ms) { (void)ms; }
 
     void enter(TState next, uint32_t nowMs) {
+        if (next != _state) {
+            DBG_EVENT(_dbgTag, "st", (int32_t)_state, (int32_t)next);
+            DBG_PULSE(dbg::kPinState);
+        }
         _state = next;
         last_update = nowMs;
     }
@@ -74,6 +96,8 @@ protected:
     // Goes to the error state. Every failure, from whichever helper,
     // comes through here, and onFail() is called first.
     void fail(uint32_t nowMs) {
+        DBG_FAULT(_dbgTag, "fail", (int32_t)_state);
+        DBG_PULSE(dbg::kPinFault);
         onFail();
         enter(_errorState, nowMs);
     }
@@ -105,6 +129,7 @@ protected:
         if (started) {
             enter(waitState, nowMs);
         } else if (elapsed(nowMs, _busTimeoutMs)) {
+            DBG_FAULT(_dbgTag, "issue-timeout", (int32_t)_state);
             fail(nowMs);
         } else {
             sleep(1);
@@ -117,6 +142,7 @@ protected:
     bool landed(uint32_t nowMs) {
         if (!finished(nowMs)) return false;
         if (this->lastOpFailed()) {
+            DBG_FAULT(_dbgTag, "bus-err", (int32_t)_state);
             fail(nowMs);
             return false;
         }
@@ -131,6 +157,7 @@ protected:
     bool finished(uint32_t nowMs) {
         if (this->isBusy()) {
             if (elapsed(nowMs, _busTimeoutMs)) {
+                DBG_FAULT(_dbgTag, "land-timeout", (int32_t)_state);
                 fail(nowMs);
             } else {
                 sleep(1);
@@ -162,4 +189,7 @@ protected:
 private:
     TState   _errorState;
     uint32_t _busTimeoutMs;
+#if ITRANSPORT_DEBUG
+    const char* _dbgTag = "ssm";
+#endif
 };

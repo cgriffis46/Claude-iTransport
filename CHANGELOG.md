@@ -15,7 +15,7 @@ pull request, newest first.
   (text and data) and sends its own adverts and group packets by flood,
   with MeshCore's airtime budget and listen-before-talk; `MeshPacket`,
   `MeshCrypto`, `MeshIdentity` (Ed25519), `MeshMessages` and `xMeshNode`
-  (CMSIS-RTOS2 loop). Checked against MeshCore's own code built on a PC.
+  (CMSIS-RTOS2 loop). Checked against MeshCore's own code built on a PC ([#27](https://github.com/cgriffis46/Claude-iTransport/pull/27)).
 - `iRadio/crypto`: `Sha256` and `HmacSha256`, and AES-128 decryption.
 - `iRadio/third_party/monocypher`: Monocypher 4.0.2, vendored for Ed25519.
 - `iLoRaRadio::channelBusy()` and `busy()`, implemented by `rfm95`.
@@ -98,9 +98,9 @@ pull request, newest first.
 #### Changed
 - `Aes128.h` and `AesCmac.h` moved from `iRadio/lorawan/inc` to
   `iRadio/crypto/inc`; the CMake target `lorawan_crypto` is now
-  `radio_crypto`.
+  `radio_crypto` ([#27](https://github.com/cgriffis46/Claude-iTransport/pull/27)).
 - The SX1276 simulator raises ValidHeader while a packet arrives and
-  takes radio ranges (`Air::inRange`).
+  takes radio ranges (`Air::inRange`) ([#27](https://github.com/cgriffis46/Claude-iTransport/pull/27)).
 - `NmeaParser` moved from `isensor/ublox_gps` to `isensor/nmea`, shared
   by both GNSS drivers, with `ByteRing` (the interrupt-to-thread ring,
   taken out of `ublox_gps`) and its own test. It now gives a

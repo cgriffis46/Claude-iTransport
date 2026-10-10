@@ -14,9 +14,12 @@
 #                       a class template over its transport (header only),
 #                       xrfm95 (CMSIS-RTOS2), SX1276Regs.h and LoRaPhy.h
 #   lorawan/            lorawan_crypto: AES-128 and AES-CMAC (header only);
-#                       the LoRaWAN MAC goes here next
+#                       lorawan: the LoRaWAN 1.0.4 Class A MAC (LoRaWanMac),
+#                       its frames (LoRaWanFrame) and regions (RegionUS915),
+#                       and xLoRaWanMac.h, its CMSIS-RTOS2 loop (header)
 #   test/               host tests and simulations (an RFM69, ISS stations,
-#                       SX1276 radios sharing an air)
+#                       SX1276 radios sharing an air, a TTN gateway and
+#                       network server)
 #
 # Needs itransport's sensor_transport and isensor's SensorStateMachine.
 # Built on its own, this file adds itransport from ITRANSPORT_DIR and finds
@@ -97,6 +100,19 @@ add_library(lorawan_crypto INTERFACE)
 target_include_directories(lorawan_crypto INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/lorawan/inc)
 target_compile_features(lorawan_crypto INTERFACE cxx_std_17)
 
+# --- lorawan -------------------------------------------------------------------------
+add_library(lorawan STATIC
+    lorawan/inc/LoRaWanFrame.h
+    lorawan/inc/LoRaWanRegion.h
+    lorawan/inc/RegionUS915.h
+    lorawan/inc/LoRaWanMac.h
+    lorawan/src/LoRaWanFrame.cpp
+    lorawan/src/RegionUS915.cpp
+    lorawan/src/LoRaWanMac.cpp
+)
+target_link_libraries(lorawan PUBLIC lorawan_crypto rfm95)
+set_target_properties(lorawan PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${IRADIO_LIB_DIR})
+
 # --- Host tests ------------------------------------------------------------------
 if(SENSOR_FW_BUILD_TESTS)
     add_executable(davis_test test/davis_test.cpp)
@@ -131,4 +147,18 @@ if(SENSOR_FW_BUILD_TESTS)
     )
     target_link_libraries(rfm95_test PRIVATE rfm95)
     add_test(NAME rfm95_test COMMAND rfm95_test)
+
+    add_executable(lorawan_frame_test test/lorawan_frame_test.cpp)
+    target_include_directories(lorawan_frame_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test/sim)
+    target_link_libraries(lorawan_frame_test PRIVATE lorawan)
+    add_test(NAME lorawan_frame_test COMMAND lorawan_frame_test)
+
+    # A device and a simulated TTN gateway and network server on one air.
+    add_executable(lorawan_mac_test test/lorawan_mac_test.cpp)
+    target_include_directories(lorawan_mac_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/stub
+    )
+    target_link_libraries(lorawan_mac_test PRIVATE lorawan)
+    add_test(NAME lorawan_mac_test COMMAND lorawan_mac_test)
 endif()

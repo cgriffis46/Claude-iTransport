@@ -1,8 +1,9 @@
 # iRadio
 
 Radio transceivers and the protocols spoken over them: a receiver for the Davis
-Vantage Pro2 / Vue ISS on an RFM69 (SX1231), and a LoRa radio driver for the RFM95W
-(SX1276), on which the LoRaWAN MAC will be built.
+Vantage Pro2 / Vue ISS on an RFM69 (SX1231), a LoRa radio driver for the RFM95W
+(SX1276), and a LoRaWAN 1.0.4 Class A end device on top of it (US915, The Things
+Network).
 
 ```
 rfm69/inc/        RFM69Regs.h: the SX1231 / RFM69 registers used here
@@ -16,9 +17,12 @@ hw/freertos/      xdavis_rfm69: the receiver in its own FreeRTOS task, with a pa
 rfm95/            rfm95<TTransport>: the RFM95W / SX1276 in LoRa mode (header only),
                   xrfm95 (CMSIS-RTOS2), SX1276Regs.h, LoRaPhy.h (FRF, time on air,
                   RSSI and SNR)
-lorawan/          Aes128 and AesCmac (header only); the LoRaWAN MAC comes next
+lorawan/          LoRaWAN: Mac (Class A, OTAA, MAC commands, ADR), LoRaWanFrame (frames,
+                  keys, MIC), Region / RegionUS915, xLoRaWanMac (CMSIS-RTOS2 loop),
+                  Aes128 and AesCmac
 test/             host tests, a simulated RFM69 and simulated ISS stations (sim/),
-                  simulated SX1276 radios sharing an air (sim/SimSX1276.h),
+                  simulated SX1276 radios sharing an air (sim/SimSX1276.h), a
+                  simulated TTN gateway and network server (sim/SimLoRaWanServer.h),
                   and single threaded FreeRTOS and CMSIS-RTOS2 stand-ins (stub/)
 ```
 
@@ -238,8 +242,69 @@ void radioTask(void*) {
 `Aes128` (encrypt only, which is all LoRaWAN needs) and `AesCmac` (RFC 4493) are table
 based and small; they are not hardened against timing or power analysis.
 
-LoRaWAN Class A (US915, The Things Network, OTAA, LoRaWAN 1.0.4) is the next step. A
-mesh such as MeshCore is a separate protocol on the same radio, not part of LoRaWAN.
+## LoRaWAN (Class A, US915, The Things Network)
+
+`lorawan::Mac` is a LoRaWAN 1.0.4 Class A end device, written here (not LMIC or
+LoRaMac-node), over any `lora::iLoRaRadio` (`rfm95` is one). Everything it uses is
+injected: the radio, a `Region` (`RegionUS915`), and an `iSessionStore` you write for
+wherever the session should live (flash, EEPROM, RTC backup registers, a LittleFS file).
+
+```cpp
+#include "rfm95.h"
+#include "RegionUS915.h"
+#include "LoRaWanMac.h"
+#include "xLoRaWanMac.h"
+
+static rfm95<Stm32HalSPITransport> radio(radioParam, &hspi1, RFM_CS_GPIO_Port, RFM_CS_Pin, spi1Mutex);
+static lorawan::RegionUS915 region(2);           // TTN's sub-band: channels 8-15 and 65
+static FlashStore store;                          // your iSessionStore (91 bytes)
+static lorawan::Mac mac(radio, region, store, param);   // DevEUI, JoinEUI, AppKey from TTN's console
+static lorawan::xLoRaWanMac loop(mac);
+
+// EXTI on DIO0 (and DIO1): radio.onDio0(HAL_GetTick()); loop.wakeFromIsr();
+
+void lorawanTask(void*) {
+    mac.begin(osKernelGetTickCount());            // loads the session
+    if (!mac.joined()) mac.join();
+    for (;;) {
+        loop.step(osKernelGetTickCount());        // sleeps until the next window or timer
+        lorawan::MacEvent e; uint8_t buf[242];
+        while (mac.takeEvent(&e, buf, sizeof buf)) { /* joined, tx_done, downlink, ... */ }
+        if (mac.ready() && mac.joined() && haveData) mac.send(1, data, len, false);
+    }
+}
+```
+
+- **Join** (OTAA): DevNonce is a counter, saved *before* each join request goes out; if
+  the save fails, nothing is sent. A join accept is checked (MIC, and a JoinNonce
+  higher than the last one) and gives the session keys, the DevAddr, the receive window
+  settings and the CFList's channel mask. Retries alternate eight 125 kHz tries at DR0
+  with one 500 kHz try at DR4, under RP002's backoff (1% of the time in the first hour,
+  0.1% to hour 11, 0.01% after).
+- **Uplinks**: unconfirmed or confirmed (repeated after RX2 plus 1-3 s until an ACK, as
+  many times as `confirmedTries` or the network's NbTrans), on a fresh channel each time,
+  every enabled channel used once a round. FCntUp is 32 bits, saved ahead in steps of
+  `saveEvery`, so a reset never reuses one.
+- **Downlinks** in RX1 or RX2, timed from the TxDone interrupt's stamp: each window opens
+  early and listens long enough for `rxErrorMs` of clock error either way (LoRaMac-node's
+  formula). FCntDown is rebuilt to 32 bits and must count up; replays, bad MICs and
+  other DevAddrs are dropped. A confirmed downlink sets ACK on the next uplink.
+- **MAC commands**: LinkADRReq (blocks of them, all US915 channel mask modes), DutyCycleReq,
+  RXParamSetupReq and RXTimingSetupReq (answers repeated until a downlink arrives),
+  DevStatusReq, LinkCheckReq/Ans and DeviceTimeReq/Ans (`requestLinkCheck()`,
+  `requestDeviceTime()`; the time refers to the end of the uplink that asked).
+  NewChannelReq, DlChannelReq and TxParamSetupReq are skipped (not US915), as
+  LoRaMac-node does.
+- **ADR**: the network sets data rate, power and NbTrans; after 64 uplinks without a
+  downlink the device asks (ADRACKReq), after 96 it goes back to full power, and every 32
+  more one data rate lower, then the default channels.
+- RAM: `Mac` 1.4 KB, `RegionUS915` 40 bytes (plus the radio's 1.5 KB). Code about 14 KB
+  at -O2 on a Cortex-M4.
+- Not here: Class B and C, ABP, LoRaWAN 1.1, regions other than US915 (the `Region`
+  interface is where they go), FSK. TTN's fair use policy (30 s of airtime a day) is the
+  application's to keep.
+
+A mesh such as MeshCore is a separate protocol on the same radio, not part of LoRaWAN.
 
 ## Building and testing
 
@@ -248,8 +313,8 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST -DITRANSPORT_BUILD_WIRINGPI=O
 cmake --build build && ctest --test-dir build
 ```
 
-There are five tests: `davis_test`, `davis_rfm69_test`, `xdavis_rfm69_test`,
-`aes_cmac_test` and `rfm95_test`.
+There are seven tests: `davis_test`, `davis_rfm69_test`, `xdavis_rfm69_test`,
+`aes_cmac_test`, `rfm95_test`, `lorawan_frame_test` and `lorawan_mac_test`.
 
 - **`stm32_rtc_clock_test`** (in itransport) runs the real `Stm32RtcClock.cpp` against a
   simulated RTC. It covers the calendar arithmetic, counting across seconds, midnight,
@@ -302,10 +367,28 @@ There are five tests: `davis_test`, `davis_rfm69_test`, `xdavis_rfm69_test`,
   (wrong version, no chip), power and OCP, packets of 1, 2, 32, 33, 200 and 255 bytes,
   I/Q inversion both ways, mismatched settings, RX timeouts (including over 255
   symbols), CRC errors, interrupt time stamps with a late thread, a stuck TX, a stuck
-  bus, full event slots, the real `SPITransport`, the tick rollover, and `xrfm95`.
+  bus, full event slots, the real `SPITransport`, the tick rollover, and `xrfm95`, and
+  a long packet caught in RX single (received whole, not cut off as stuck).
   Breaking the driver on purpose (I/Q, LDRO, the symbol timeout's top bits, the FIFO
   pieces, power, the FIFO pointer, the errata, time stamps, timeouts, the op queue's
   size) makes it fail.
+- **`lorawan_frame_test`**: frames made by the independent `lora-packet` library (join
+  requests, join accepts with their session keys, uplinks byte for byte, downlinks
+  opened; 1000 random ones matched when written, 10 kept in the test) and its README's
+  example; `RegionUS915`'s channels, data rates, power limits, RX1 table, join order and
+  every LinkADRReq channel mask mode; the receive window formula against a literal copy
+  of LoRaMac-node's (1188 cases); and the test server's AES inverse cipher (FIPS-197).
+- **`lorawan_mac_test`**: a device (`Mac` over `rfm95` over a simulated SX1276) and a
+  simulated TTN gateway and network server on one air, US915 sub-band 2. The server
+  writes its own numbers out again (channels, RX1 frequencies and data rates), so a wrong
+  region table shows up as a missed downlink. It covers joins (in RX1 and RX2, retries
+  under the backoff, giving up, a replayed JoinNonce), DevNonce saved before sending and
+  continuing across a reset, a store that can't save, uplinks and their channels and
+  power, confirmed uplinks and retransmission, downlinks (RX1 and RX2, confirmed,
+  FPending, FCntDown across 16 bits, replays, bad MICs, other addresses, a full buffer),
+  every MAC command, ADR backoff over 130 uplinks, the receive window's edges, a 32768 Hz
+  clock across the ms and tick rollovers, and `xLoRaWanMac` sleeping only as long as
+  allowed. 42 deliberate breaks of the MAC, region and frames are each caught.
 
 The Davis tests also build as `-std=gnu++14 -fno-exceptions -fno-rtti` with `-Wpedantic -Wshadow`.
 The `iRadio` sources, the transport and an example application compile with
@@ -314,6 +397,8 @@ Cortex-M0+.
 
 `xrfm95<Stm32HalSPITransport>` compiles without warnings as C++14 against the
 STM32L432's HAL and CMSIS-RTOS2 headers, at `ITRANSPORT_DEBUG` 0 and 3, and `rfm95` for
-Cortex-M0+.
+Cortex-M0+. So do the `lorawan` sources and an application with `xLoRaWanMac` over
+`rfm95<Stm32HalSPITransport>`.
 
-**Not yet run** against a real RFM69, ISS or RFM95.
+**Not yet run** against a real RFM69, ISS or RFM95, nor joined to The Things Network: the
+LoRaWAN side has only met the simulated server here.

@@ -11,7 +11,7 @@ pull request, newest first.
 
 #### Added
 - A LoRaWAN 1.0.4 Class A end device in `iRadio/lorawan` (US915, The
-  Things Network):
+  Things Network) ([#26](https://github.com/cgriffis46/Claude-iTransport/pull/26)):
   - `lorawan::Mac`: OTAA join (DevNonce saved before each request,
     JoinNonce checked, RP002 join backoff), unconfirmed and confirmed
     uplinks, downlinks in RX1 and RX2 timed from the TxDone interrupt,
@@ -96,7 +96,7 @@ pull request, newest first.
 #### Fixed
 - `rfm95`: an RX single gave up as "stuck" on a packet that began inside
   its window but lasted more than 100 ms past it (a join accept at SF12
-  is 412 ms); the deadline now allows for a 255 byte packet.
+  is 412 ms); the deadline now allows for a 255 byte packet ([#26](https://github.com/cgriffis46/Claude-iTransport/pull/26)).
 
 ### 2026-10-09
 

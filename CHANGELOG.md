@@ -27,6 +27,10 @@ pull request, newest first.
   - Host tests `nmea_parser_test` and `ublox_gps_test` (a simulated
     receiver).
 
+#### Changed
+- `CLAUDE.md`: `ublox_gps` is now in STM32_Static_Lib_Src's sync script
+  and its iSensor projects' include paths, so that open item is gone.
+
 ### 2026-10-09
 
 #### Added

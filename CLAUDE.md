@@ -628,8 +628,7 @@ STM32L432KC (L4).
 - `ublox_gps`: not run against a receiver; UBX numbers not checked
   against u-blox's own documents. No baud rate change (CFG-PRT /
   CFG-UART1-BAUDRATE), no UBX-NAV-PVT, no other makers' setup commands
-  (MediaTek PMTK, Quectel). Not yet in STM32_Static_Lib_Src's sync
-  script `SENSORS` list.
+  (MediaTek PMTK, Quectel).
 - The STM32CubeIDE projects were checked with arm-none-eabi-gcc using
   their `.cproject` settings, but have not been opened in CubeIDE.
 - CIP Safety, highest priority (the owner is getting official ODVA

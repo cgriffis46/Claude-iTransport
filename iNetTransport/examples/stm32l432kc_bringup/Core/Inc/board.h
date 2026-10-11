@@ -20,6 +20,7 @@ uint32_t board_spi_hz(void);     /* SPI1's clock now */
 const char *board_reset_cause(void);
 void board_w5500_reset(void);    /* RSTn low 2 ms, then 60 ms for its PLL to lock (blocking, thread context) */
 void board_esp_enable(int on);   /* EN high: running */
+void board_reset_pin(int asserted); /* PA3 (the W5500's RSTn, the ATWINC1500's RESET_N) low while asserted */
 uint32_t board_ms(void);         /* HAL_GetTick() */
 
 #ifdef __cplusplus

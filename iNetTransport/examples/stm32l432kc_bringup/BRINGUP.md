@@ -1,4 +1,4 @@
-# Hardware bring-up: W5500 and ESP-AT on a NUCLEO-L432KC
+# Hardware bring-up: W5500, ESP-AT and ATWINC1500 on a NUCLEO-L432KC
 
 This firmware brings the network hardware up one step at a time. At each
 step it logs what it found, and when a step fails it says what to check.
@@ -19,6 +19,8 @@ toolchain and ST's STM32CubeL4 package, not a CubeMX project.
   and an Ethernet cable to a switch or router running DHCP
 - Optionally, an ESP module running ESP-AT firmware: an ESP32 DevKit flashed
   with ESP-AT v2.x (recommended), or an ESP-01 with AT 1.7 or later
+- Or an ATWINC1500 module (Adafruit's ATWINC1500 breakout, or any with the
+  module's SPI pins brought out), firmware 19.5.0 or later
 - Jumper wires, kept short (under 10 cm) if you can: SPI runs at up to 20 MHz
 - A PC on the same network, with Python 3
 - `arm-none-eabi-gcc` 10 or later, CMake 3.16 or later, and the STM32CubeL4
@@ -40,6 +42,21 @@ Pin names are the STM32 pins, with the NUCLEO-32 header labels in brackets.
 | SCSn / CS | PA4 [A3] | |
 | INTn | PA1 [A1] | optional: without it the driver polls, with slower receive |
 | RSTn | PA3 [A2] | optional, but lets the firmware reset the chip |
+
+| ATWINC1500 module | NUCLEO-L432KC | |
+|---|---|---|
+| VBAT / VIN / 3V3 | 3V3 | transmit peaks about 300 mA: a separate 3.3 V supply if the Nucleo's sags (share GND) |
+| GND | GND | |
+| SCK | PA5 [A4] | SPI1, mode 0, 10 MHz |
+| MISO | PA6 [A5] | |
+| MOSI | PA7 [A6] | |
+| CS | PA4 [A3] | |
+| IRQ / IRQN | PA1 [A1] | optional: without it the driver polls every 100 ms |
+| RST / RESET_N | PA3 [A2] | optional: without it the firmware resets the module through a register |
+| EN / CHIP_EN, WAKE | 3.3 V | (Adafruit's breakout pulls EN up already) |
+
+The ATWINC1500 takes the W5500's pins: one or the other. It needs
+firmware 19.5.0 or later (Arduino IDE: the WiFi101 firmware updater).
 
 | ESP-AT module | NUCLEO-L432KC | |
 |---|---|---|
@@ -75,12 +92,19 @@ With Wi-Fi instead:
 cmake -S . -B build -DSTM32CUBE_L4_DIR=... -DBRINGUP_ETH=OFF -DBRINGUP_WIFI=ON -DWIFI_SSID="my-ssid" -DWIFI_PASS="my-pass"
 ```
 
-A build has one interface, never both: an L432 board has either the W5500
-or the ESP module, and the build stops if both are asked for. (A board
-with both needs a bigger STM32.)
+With the ATWINC1500:
+
+```sh
+cmake -S . -B build -DSTM32CUBE_L4_DIR=... -DBRINGUP_ETH=OFF -DBRINGUP_WINC=ON -DWIFI_SSID="my-ssid" -DWIFI_PASS="my-pass"
+```
+
+A build has one interface: an L432 board has the W5500, the ESP module or
+the ATWINC1500, and the build stops if more than one is asked for. (A
+board with more needs a bigger STM32.)
 
 Other options: `-DETH_DHCP=OFF` (the static address is
-set in `Core/Inc/config.h`), and `-DESP_BAUD=...`.
+set in `Core/Inc/config.h`), `-DESP_BAUD=...`, and
+`-DWINC_SPI_PRESCALER=SPI_BAUDRATEPRESCALER_32` for a slower ATWINC1500 SPI.
 
 Flash it in one of these ways:
 - copy `build/inet_bringup.bin` onto the `NODE_L432KC` USB drive;
@@ -142,6 +166,12 @@ The firmware stops at the first step that can't work and says why. In order:
 | `time: no answer from the NTP server` | UDP 123 blocked on the way out, or the NTP server DHCP named isn't answering. The board carries on without the time, and retries every minute |
 | `[wifi] the module never answered "AT"` | TX/RX swapped, baud rate (ESP-AT v2 defaults to 115200), EN not high, or the supply sagging (use a separate regulator) |
 | `[wifi] join failed` | the SSID or passphrase, the band (ESP modules are 2.4 GHz only), or range |
+| `[winc] no answer on SPI1` | 3.3 V and GND, SCK/MISO/MOSI/CS, CHIP_EN high; RESET_N not held low |
+| `[winc] chip ID 0x... is not an ATWINC1500` | another chip on SPI1, or MISO picking up noise |
+| `[winc] firmware ... is older than 19.5.0` | update the module's firmware (Arduino IDE: WiFi101 firmware updater) |
+| `[winc] the firmware never started` / `boot ROM never ... ready` | power sagging during start-up, or no firmware in the module's flash |
+| `[winc] SPI accesses kept failing` | wiring, or try `-DWINC_SPI_PRESCALER=SPI_BAUDRATEPRESCALER_32` |
+| `[winc] join failed (reason 1 ...)` / `(reason 3 ...)` | no such network in range (2.4 GHz only) / the wrong passphrase |
 | `*** PANIC: stack overflow in task 'x'` | raise that thread's `stack_size` in `bringup.cpp` / `services.cpp` |
 | `*** PANIC: FreeRTOS heap exhausted` | raise `configTOTAL_HEAP_SIZE` in `FreeRTOSConfig.h` (about 15 KB of RAM is left beyond the 34 KB heap) |
 | `*** PANIC: HardFault at pc=...` | `arm-none-eabi-addr2line -e build/inet_bringup.elf <pc>` gives the line; report it |

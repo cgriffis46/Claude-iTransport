@@ -1,16 +1,17 @@
 # iNetTransport
 
 Network interfaces on top of itransport: `xEthernet`, `xWifi` and `xClient`
-for FreeRTOS, with three drivers underneath. One is the WIZnet W5500
+for FreeRTOS, with four drivers underneath. One is the WIZnet W5500
 (Ethernet over SPI). One is an Espressif module running ESP-AT firmware
-(Wi-Fi over a UART). The third, `SocketNetDevice`, runs on a TCP/IP stack's
+(Wi-Fi over a UART). One is Microchip's ATWINC1500 (Wi-Fi over SPI). The
+fourth, `SocketNetDevice`, runs on a TCP/IP stack's
 socket API: lwIP's on an MCU with its own Ethernet MAC (the STM32F207) or
 on an ESP32, or the operating system's on Linux. There are also DHCP, DNS and SNTP clients,
 so an interface gets its address, looks up names and keeps the time, and
 an MQTT client (`xMqttClient`), an HTTP client (`xHttpClient`) and a web
 server (`xHttpServer`) that run over either interface.
-Target: STM32L432KC, with one interface (the W5500 or an ESP module, not
-both), most likely as a node that sends its data out: an MQTT or HTTP
+Target: STM32L432KC, with one interface (the W5500, an ESP module or an
+ATWINC1500, never two), most likely as a node that sends its data out: an MQTT or HTTP
 client. The servers (`xHttpServer`) fit it with `maxClients = 1`, but are
 meant for bigger STM32s, such as the F207 with lwIP, where the same code
 runs on `SocketNetDevice`.
@@ -199,6 +200,79 @@ firmware, over any `iTransport` (`Stm32HalUartTransport` on the L432).
 - Written for ESP-AT v2.x; ESP8266 AT 1.7's reply format is understood too.
 - The module has one server port, so every listening client must use the
   same port. Throughput is the UART's: about 11 KB/s each way at 115200 baud.
+
+## ATWINC1500 driver
+
+`winc1500<TTransport>` (`winc1500/`) drives Microchip's (Atmel's) ATWINC1500
+Wi-Fi module (Adafruit's breakout, the Feather M0 WiFi's module, Arduino's
+MKR1000) over any `iBlockTransport` (`Stm32HalSpiBlockTransport` on the L432).
+It was written here, non-blocking, with Microchip's host driver 19.5.2 (BSD-3,
+as shipped in Arduino's WiFi101 library) as the reference for a protocol that
+has no other public description.
+
+```cpp
+WINC1500::winc_param_t p;
+p.hardReset = [](bool asserted) { HAL_GPIO_WritePin(WINC_RST_GPIO_Port, WINC_RST_Pin,
+                                                    asserted ? GPIO_PIN_RESET : GPIO_PIN_SET); };
+p.pollMs = 100;                       // IRQN wired to interruptFromIsr()
+static WINC1500::winc1500<Stm32HalSpiBlockTransport> winc(p, &hspi1, WINC_CS_GPIO_Port, WINC_CS_Pin, spiMutex);
+static xWifi wifi(winc, cfg);         // cfg.rxBufBytes = 1400 or more: see below
+// in HAL_GPIO_EXTI_Callback: if (pin == WINC_IRQN_Pin) wifi.interruptFromIsr();
+```
+
+- **Wiring.** SCK, MISO, MOSI, CS (SPI mode 0, up to 48 MHz; 10 MHz in the
+  bring-up firmware), IRQN (active low: a falling-edge interrupt with a
+  pull-up), RESET_N (`hardReset`); CHIP_EN and WAKE tied to 3.3 V. Without a
+  reset pin it resets the module through a register. The module draws about
+  300 mA peaks.
+- **Start-up.** A reset, then the SPI with CRC-7 on its commands, which the
+  driver turns off, as Microchip's does. Then the chip ID, the boot ROM, the
+  host's version (it says 19.5.2), the firmware's "init done", IRQN on, and
+  the firmware's version and MAC from its memory. `error()` says why a start
+  failed: no answer, another chip, firmware older than 19.5.0
+  (`firmware_too_old`: update it with Arduino's or Microchip's updater), or
+  one needing a newer host driver. It retries every second by itself.
+- **Every access** is a few SPI transfers (the command, its echo and state
+  read a byte at a time, the data), each one state of `poll()`, never a wait.
+  A failed access is repeated after an SPI reset command, 10 times, as
+  Microchip's driver does.
+- **Messages.** Requests go into a buffer the module hands out (HIF); the
+  module's messages wait in its memory until the driver says "RX done". A
+  module that hands out no buffer for 5 s is restarted (it may have reset
+  behind our back).
+- **Wi-Fi.** `join()` with WPA2 (8 to 63 characters, or 64 hex digits) or
+  an open network (empty passphrase); the passphrase isn't saved in the
+  module's flash. `joinError()`: 1 no such network, 3 wrong passphrase. The
+  module does DHCP, or takes a static address. RSSI is asked for every
+  `rssiPollMs`. The module doesn't rejoin by itself; the driver does, every 5
+  s, when the network goes away, until `leave()` or another `join()`.
+- **Sockets.** 7 TCP sockets on the module; the interface gets `sockets` (6)
+  of them. A listen takes one module socket per port, shared by every
+  interface socket listening on it, and each accepted connection another. A
+  peer arriving while nobody listens is closed; a listening socket nobody
+  wants closes after 2 s. Two ports at once.
+- **Data.** One send of up to 1400 bytes in flight per socket. One receive
+  outstanding per socket: a reply (up to 1400 bytes) is copied into the
+  driver's buffer and the module released at once, then handed to the
+  reader as it has room. A reader that falls behind by more than its buffer
+  keeps the driver's buffer, and replies for other sockets wait in the
+  module until it catches up, so give sockets read slowly
+  `rxBufBytes` of 1400 or more.
+- **DNS and time** are the module's: `resolve()` asks it, `requestTime()`
+  reads its clock (the firmware's SNTP client, its own servers; to the
+  second) and asks again each second until it is set, up to 15 s.
+- **Size** (L432, `-Os`): 11.6 KB of code, 3.9 KB of RAM (a 1.5 KB message
+  buffer and a 1.4 KB receive buffer among it).
+- **Not here:** TLS on the module, UDP, power save, access point and
+  provisioning modes, scanning, WPS, 802.1X and WEP networks, setting the
+  SNTP server, the module's OTA update.
+- **Checked against Microchip's driver.** `winc1500/test/ref/winc_numbers.c`
+  printed every opcode, register, size and offset from Microchip's headers
+  for the ARM ABI; `WincRef_test` (`-DWINC_REF_DIR=<WiFi101>`) static_asserts
+  `WincProtocol.h` against those headers, and runs Microchip's driver
+  itself on the PC against the simulated module the driver's tests use:
+  start-up, join, DHCP, RSSI, time, TCP both ways, a listen, DNS, with the
+  simulator finding nothing it didn't expect. Nothing has run on a module.
 
 ## MQTT
 
@@ -622,8 +696,10 @@ ring.
 `examples/stm32l432kc_bringup` is a complete firmware for the NUCLEO-L432KC
 that builds with CMake and the STM32CubeL4 package, with no CubeMX project.
 It checks the W5500's wiring at each SPI speed and then runs at the fastest
-one that passes. It checks the INT line and the PHY, then brings up DHCP
-or the ESP module (one per build), looks up a name and sets the time. It logs each step
+one that passes. It checks the INT line and the PHY, then brings up DHCP,
+or the ESP module, or the ATWINC1500 (one per build: `-DBRINGUP_WINC=ON`
+puts it on SPI1 in the W5500's place, and the log says why it stopped if
+it does), looks up a name and sets the time. It logs each step
 with what to check when it fails, and serves echo, discard, chargen and
 time. `tools/net_bringup.py` drives those services from a PC, checking
 every byte, measuring latency and throughput, and comparing the board's
@@ -757,11 +833,33 @@ cmake --build build && ctest --test-dir build
   non-forward-secret suites, ticket resumption, the port 80 redirect, a
   login and a protected write, 111 KB streamed, two connections at once,
   and the heap per connection.
+- `Winc1500_test`: the ATWINC1500 driver against a simulated module
+  (`test/sim/SimWinc1500.h`) that answers the SPI byte by byte as
+  Microchip's driver expects, with its registers, boot handshake, HIF and
+  firmware (access points, DHCP, sockets, DNS, the clock). It covers
+  start-up with and without a reset pin, the CRC left off from before,
+  0 to 5 idle bytes before each answer (and too many), no module, another
+  chip, firmware too old or needing a newer driver, firmware that never
+  starts, a refusing bus; WPA2 and open joins, a wrong passphrase, no such
+  network, a bad passphrase refused before sending, switching networks,
+  static addresses, DHCP renewal, RSSI, losing the network and rejoining by
+  itself; TCP both ways (10 KB up, 20 KB down), a peer's close after its
+  last bytes, refused and unanswered connects; a slow reader beside a fast
+  one; listening, a second listener on the same port, a peer with nobody
+  listening, the listener's linger, a third port refused; DNS (including
+  a replaced lookup and an address), the time before and after the
+  module's SNTP sync; failed transfers and corrupted commands mid-transfer;
+  a module slow or unable to hand out buffers; a module reset behind the
+  driver's back; and data arriving through IRQN.
+- `WincRef_test` (with `-DWINC_REF_DIR`): Microchip's own driver against
+  the same simulated module (see the driver's section).
 - `xNet_test`: the real FreeRTOS-layer sources on real threads, against a
   FreeRTOS simulation (`test/stub`), with both drivers. It covers blocking
   reads and their timeouts, 20 KB each way, a close waking a sleeping
   reader, connect refusal and timeout, the socket limit, listen/accept, the
-  INT pin, DHCP, and `xWifi` joining and moving data through the ESP driver.
+  INT pin, DHCP, and `xWifi` joining and moving data through the ESP driver,
+  and through the ATWINC1500 driver (IRQN relayed as the interrupt, DNS,
+  the module's time, 5 KB up and 8 KB down, a peer's close).
   It also covers `resolve()` from two threads at once and after a timeout,
   the time set by itself and by `syncTime()`, and DHCP's NTP server.
 - `spi_block_transport_test` (in itransport): the two SPI phases under one

@@ -21,6 +21,9 @@
 #   w5500/                   WIZnet W5500 driver (SPI), a class template
 #                            over its transport, with a host test
 #   espat/                   ESP-AT Wi-Fi module driver (UART), likewise
+#   winc1500/                Microchip ATWINC1500 Wi-Fi module driver (SPI),
+#                            likewise (WINC_REF_DIR: checked against
+#                            Microchip's own driver)
 #   examples/                a W5500 echo server for the STM32L432KC
 #   test/                    the FreeRTOS layer's threaded host test,
 #                            the FreeRTOS simulation it runs on (stub/),
@@ -119,6 +122,7 @@ add_subdirectory(mqtt)
 add_subdirectory(http)
 add_subdirectory(w5500)
 add_subdirectory(espat)
+add_subdirectory(winc1500)
 add_subdirectory(sockets)
 add_subdirectory(storage)
 
@@ -140,7 +144,7 @@ if(SENSOR_FW_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/test/sim
         ${CMAKE_CURRENT_SOURCE_DIR}/hw/freertos/inc
     )
-    target_link_libraries(xNet_test PRIVATE w5500_driver espat_driver inet_mqtt inet_http Threads::Threads)
+    target_link_libraries(xNet_test PRIVATE w5500_driver espat_driver winc1500_driver inet_mqtt inet_http Threads::Threads)
     add_test(NAME xNet_test COMMAND xNet_test)
 
     # xMqttClient on real threads: the MQTT thread and the W5500's driver

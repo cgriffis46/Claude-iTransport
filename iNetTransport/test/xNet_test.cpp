@@ -27,6 +27,8 @@
 #include "SimNtpServer.h"
 #include "EspAt.h"
 #include "SimEspAt.h"
+#include "Winc1500.h"
+#include "SimWinc1500.h"
 
 using namespace std::chrono;
 
@@ -466,6 +468,77 @@ int main() {
         }
         quit = true;
         driver.join();
+    }
+
+
+    std::printf("xWifi on an ATWINC1500 module\n");
+    {
+        SimWinc1500 sim;
+        sim.aps.push_back({"home", "secret123"});
+        sim.servers["93.184.216.34:80"] = SimWinc1500::Policy::Accept;
+        sim.dns["example.com"] = IpAddress(93, 184, 216, 34);
+        sim.utcSeconds = 1791000000;
+        WINC1500::winc_param_t p;
+        p.pollMs = 100;   // IRQN relayed below: polling only a backstop
+        WINC1500::winc1500<FakeWincSpi> winc(p, sim);
+        xWifi wifi(winc);
+        sim.onIrq = [&] { wifi.interruptFromIsr(); };
+        NetConfig net;
+        net.dhcp = true;
+        wifi.begin(net);
+        std::atomic<bool> quit{false};
+        // The module's own clock: boot, joins, DHCP and replies take time.
+        std::thread clock([&] {
+            const auto t0 = steady_clock::now();
+            while (!quit) { sim.tick(static_cast<uint32_t>(msSince(t0))); sleepMs(1); }
+        });
+        std::thread driver([&] { while (!quit) wifi.service(50); });
+
+        check(wifi.waitReady(3000), "module up (boot handshake, firmware 19.6.1)");
+        check(!wifi.join("home", "wrong-pass", 3000), "wrong passphrase: join() false");
+        check(wifi.join("home", "secret123", 3000) && wifi.linkUp(), "join() true");
+        check(wifi.waitAddress(2000) && wifi.address().ip == sim.dhcpIp, "address from the module's DHCP");
+        IpAddress ip;
+        check(wifi.resolve("example.com", ip, 3000) && ip == IpAddress(93, 184, 216, 34), "resolve() through the module's DNS");
+        check(wifi.syncTime(5000) && wifi.timeValid(), "syncTime() through the module's SNTP");
+        const uint64_t t = wifi.unixTimeMs();
+        check(t >= uint64_t(sim.utcSeconds) * 1000 && t < uint64_t(sim.utcSeconds) * 1000 + 4000, "unixTimeMs()");
+        {
+            xClient c(wifi);
+            check(c.connect(IpAddress(93, 184, 216, 34), 80, 3000), "connect()");
+            const std::vector<uint8_t> up = pattern(5000, 7);
+            c.write(up.data(), up.size(), 3000);
+            check(eventually([&] { return sim.fromDevice(0).size() == up.size(); }, 3000) && sim.fromDevice(0) == up,
+                  "5 KB written reaches the peer whole");
+            std::thread peer([&] { sleepMs(50); sim.peerSend(0, std::string("hello")); });
+            uint8_t buf[512];
+            const auto t0 = steady_clock::now();
+            const int32_t n = c.read(buf, sizeof buf, 3000);
+            const long took = msSince(t0);
+            peer.join();
+            check(n == 5 && std::memcmp(buf, "hello", 5) == 0 && took < 300,
+                  "read() sleeps until IRQN, then gets the data");
+            // 8 KB down through a 1 KB stream buffer, read 300 bytes at a time.
+            const std::vector<uint8_t> down = pattern(8000, 21);
+            sim.peerSend(0, down.data(), down.size());
+            std::vector<uint8_t> got;
+            const auto t1 = steady_clock::now();
+            while (got.size() < down.size() && msSince(t1) < 5000) {
+                const int32_t k = c.read(buf, 300, 500);
+                if (k > 0) got.insert(got.end(), buf, buf + k);
+            }
+            check(got == down, "8 KB received intact");
+            std::thread closer([&] { sleepMs(50); sim.peerClose(0); });
+            const auto t2 = steady_clock::now();
+            check(c.read(buf, sizeof buf, 5000) == -1 && msSince(t2) < 1000, "peer close wakes the reader: -1");
+            closer.join();
+        }
+        check(eventually([&] { return sim.openSockets() == 0; }, 1000), "the module's socket closed");
+        check(sim.misuse == 0, "the simulated module saw no misuse");
+        for (auto &m : sim.misuseWhat) std::printf("    misuse: %s\n", m.c_str());
+        quit = true;
+        driver.join();
+        clock.join();
     }
 
     std::printf("%s (%d failure%s)\n", g_failures ? "FAILED" : "PASSED", g_failures, g_failures == 1 ? "" : "s");

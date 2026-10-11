@@ -13,7 +13,7 @@ pull request, newest first.
 - A Wi-Fi driver for Microchip's ATWINC1500 over SPI, in
   `iNetTransport/winc1500`: `winc1500<TTransport>`, an `iWifiDevice` for
   `xWifi`, non-blocking and written here. Microchip's host driver 19.5.2
-  (BSD-3, in Arduino's WiFi101) is the protocol reference.
+  (BSD-3, in Arduino's WiFi101) is the protocol reference ([#28](https://github.com/cgriffis46/Claude-iTransport/pull/28)).
   - Start-up: reset (pin or register), SPI CRC off, the boot handshake,
     and the firmware's version and MAC; 19.5.0 or later is required.
   - Messages through the module's HIF, with RX-done flow control.
@@ -33,11 +33,11 @@ pull request, newest first.
     - `xNet_test`: `xWifi` over the driver, on real threads.
 - The L432 bring-up firmware builds with the ATWINC1500
   (`-DBRINGUP_WINC=ON`) on SPI1 in the W5500's place. The log says why
-  it stopped if it does.
+  it stopped if it does ([#28](https://github.com/cgriffis46/Claude-iTransport/pull/28)).
 
 #### Changed
 - The bring-up firmware's build takes exactly one of `BRINGUP_ETH`,
-  `BRINGUP_WIFI` and `BRINGUP_WINC`. `board_reset_pin()` drives PA3.
+  `BRINGUP_WIFI` and `BRINGUP_WINC`. `board_reset_pin()` drives PA3 ([#28](https://github.com/cgriffis46/Claude-iTransport/pull/28)).
 
 ### 2026-10-10
 

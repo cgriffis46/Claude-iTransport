@@ -16,7 +16,7 @@ pull request, newest first.
   until a time is set; `set()` refuses out-of-range values;
   `setFromSecondsOfDay()`; the separator can be changed, blanked to blink,
   or left out ("HHMM"). Tested in `gui_test`, including through the GUI
-  task on a refresh.
+  task on a refresh ([#29](https://github.com/cgriffis46/Claude-iTransport/pull/29)).
 - A Wi-Fi driver for Microchip's ATWINC1500 over SPI, in
   `iNetTransport/winc1500`: `winc1500<TTransport>`, an `iWifiDevice` for
   `xWifi`, non-blocking and written here. Microchip's host driver 19.5.2

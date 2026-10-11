@@ -73,10 +73,12 @@ add_library(idisplay_gui STATIC
     gui/inc/xMenu.h
     gui/inc/xFields.h
     gui/inc/xButton.h
+    gui/inc/xTime.h
     gui/src/xGuiCore.cpp
     gui/src/xMenu.cpp
     gui/src/xFields.cpp
     gui/src/xButton.cpp
+    gui/src/xTime.cpp
 )
 target_include_directories(idisplay_gui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/gui/inc)
 target_link_libraries(idisplay_gui PUBLIC display_core)

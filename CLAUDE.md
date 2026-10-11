@@ -178,7 +178,9 @@ GNSS receivers on a UART (`iTransport`): `nmea/` holds what they share,
   (1 ms ticks can be short by up to 1 ms). `xhd44780` sleeps with osDelay.
 - `gui/` (no RTOS): `xScreen`/`xNavigator`, `xGuiCore` (screen stack,
   home at the bottom), `xMenu`/`xMenuScreen`, `xYesNoField`,
-  `xChoiceField`, `xTextField`, `xButton` (ISR-safe debounce; plain,
+  `xChoiceField`, `xTextField`, `xTimeHHMM`/`xTimeHHMMSS` (a time of
+  day at a fixed place; `update(s)` writes it there, from `render()`;
+  dashes until set), `xButton` (ISR-safe debounce; plain,
   long press or auto-repeat via `xButtonConfig`).
 - `hw/freertos/`: `xGui` (the GUI task), `xGuiButton`, and
   `xGuiButtonGroup` (periodic osTimer that posts `Held`/`Repeat`; a pin

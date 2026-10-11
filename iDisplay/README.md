@@ -19,6 +19,7 @@ gui/            idisplay_gui, no RTOS
                   xGuiCore             the screen stack and what each event does to it
                   xMenu, xMenuScreen   scrolling menu; items open a screen, run an action, or go back
                   xYesNoField, xChoiceField, xTextField   the fields an edit screen is made of
+                  xTimeHHMM, xTimeHHMMSS   a time of day at a fixed place ("HH:MM", "HH:MM:SS")
                   xButton              edge debouncing (safe in an interrupt), long press, auto-repeat
 hw/freertos/    xGui (the GUI task), xGuiButton, and xGuiButtonGroup (the timer for
                 long presses and auto-repeat), CMSIS-RTOS2
@@ -122,6 +123,39 @@ void HAL_GPIO_EXTI_Callback(uint16_t pin) { // EXTI on both edges, pull-up, butt
 // In the sensor thread, when a reading lands:
 gui.post(xGuiEvent::refresh());
 ```
+
+## A clock on the display
+
+`xTimeHHMM` holds a time of day and writes it as "HH:MM" (24 hour, zero
+padded) at the column and row it was given; `xTimeHHMMSS` writes
+"HH:MM:SS". `update(surface)` writes it there (`render(surface)` writes it
+at the cursor instead, like the fields). It shows "--:--" until a time is
+set, so a clock that has not been set yet doesn't look right.
+`set(h, m[, s])` refuses values out of range; `setFromSecondsOfDay()`
+takes seconds since midnight (e.g. Unix seconds `% 86400`).
+`setSeparator()` changes the ':' (`' '` on alternate seconds blinks it;
+0 leaves it out: "HHMM").
+
+As with everything drawn, `update()` goes in a screen's `render()`, in
+the GUI task; the thread that knows the time sets it and posts a refresh:
+
+```cpp
+xTimeHHMM clock(11, 0);                          // top right of a 16x2 LCD
+
+void HomeScreen::render(iTextSurface& s) {
+    s.print("Out ");
+    s.print(weather.temperatureF, 1);
+    clock.update(s);
+}
+
+// The thread with the time (an RTC alarm, SNTP), once a minute:
+clock.setFromSecondsOfDay(unixSeconds % 86400);
+gui.post(xGuiEvent::refresh());
+```
+
+The HD44780 driver sends only the characters that changed and the SSD1306
+only the pages, so a refresh a minute (or a second) costs a digit or two
+on the bus.
 
 ## Character LCDs
 

@@ -2,13 +2,13 @@
  * gui_test.cpp
  *
  * Host test for the GUI: iTextSurface and MonoCanvas, the screen stack
- * (xGuiCore), xMenu, the fields, xButton's debouncing, and xGui and
+ * (xGuiCore), xMenu, the fields, xTimeHHMM/xTimeHHMMSS, xButton's debouncing, and xGui and
  * xGuiButton over a simulated CMSIS-RTOS2 queue (stub/cmsis_os2.h). No
  * hardware, HAL or RTOS needed. ID is the iDisplay folder:
  *
  *   g++ -std=c++17 -Wall -Wextra -Istub -I../inc -I$ID/inc -I$ID/gui/inc \
  *       gui_test.cpp ../src/xGui.cpp $ID/gui/src/xGuiCore.cpp $ID/gui/src/xMenu.cpp \
- *       $ID/gui/src/xFields.cpp $ID/gui/src/xButton.cpp $ID/src/iTextSurface.cpp \
+ *       $ID/gui/src/xFields.cpp $ID/gui/src/xButton.cpp $ID/gui/src/xTime.cpp $ID/src/iTextSurface.cpp \
  *       $ID/src/MonoCanvas.cpp $ID/src/Font5x7.cpp -o gui_test
  */
 
@@ -20,6 +20,7 @@
 #include "xGui.h"
 #include "xMenu.h"
 #include "xFields.h"
+#include "xTime.h"
 #include "MonoCanvas.h"
 
 using namespace idisplay;
@@ -529,6 +530,94 @@ static void task() {
     check(!deep.post(xGuiEvent::refresh()) && deep.queue()->depth == 4, "a deeper queue can be asked for");
 }
 
+static void timeOfDay() {
+    std::printf("time of day\n");
+    FakeText t(16, 2);
+    xTimeHHMM hm(11, 0);
+    check(!hm.valid() && hm.width() == 5 && xTimeHHMM::kWidth == 5, "HH:MM: 5 wide, not set yet");
+    hm.update(t);
+    check(t.row(0) == "           --:--", "dashes until a time is set");
+    check(hm.set(9, 5), "set(9, 5)");
+    hm.update(t);
+    check(t.row(0) == "           09:05", "update() writes 09:05 at its place, zero padded");
+    check(t.cursorCol() == 16 && t.cursorRow() == 0, "the cursor is left after it");
+    check(!hm.set(24, 0) && !hm.set(12, 60) && hm.hours() == 9 && hm.minutes() == 5, "24:00 and 12:60 refused, the time kept");
+    check(hm.set(23, 59), "23:59 taken");
+    hm.update(t);
+    check(t.row(0) == "           23:59", "23:59");
+    hm.setFromSecondsOfDay(86400u * 3 + 13 * 3600 + 7 * 60 + 42);
+    hm.update(t);
+    check(t.row(0) == "           13:07" && hm.hours() == 13 && hm.minutes() == 7, "from seconds of the day, whole days dropped");
+    hm.setFromSecondsOfDay(0xFFFFFFFFu);        // 4294967295 % 86400 = 23295 s = 06:28:15
+    hm.update(t);
+    check(t.row(0) == "           06:28", "the largest count (a uint32 of Unix seconds) wraps right");
+    hm.invalidate();
+    hm.update(t);
+    check(t.row(0) == "           --:--", "invalidate(): dashes again");
+
+    hm.set(7, 30);
+    hm.setSeparator(0);
+    check(hm.width() == 4, "no separator: 4 wide");
+    t.clear();
+    hm.update(t);
+    check(t.row(0) == "           0730", "HHMM");
+    hm.setSeparator(' ');
+    hm.update(t);
+    check(t.row(0) == "           07 30", "a blank separator (the blink's off half)");
+    hm.setSeparator(':');
+
+    // render() writes at the cursor, like the fields.
+    t.clear();
+    t.printAt(0, 1, "Now ");
+    hm.render(t);
+    check(t.row(1) == "Now 07:30", "render() writes at the cursor");
+    hm.setPosition(0, 1);
+    check(hm.col() == 0 && hm.row() == 1, "setPosition()");
+
+    // Clipped at the edge, never wrapped onto the next row.
+    FakeText narrow(4, 2);
+    xTimeHHMM edge(2, 0);
+    edge.set(12, 34);
+    edge.update(narrow);
+    check(narrow.row(0) == "  12" && narrow.row(1) == "", "clipped at the right edge");
+
+    xTimeHHMMSS hms(4, 1);
+    check(hms.width() == 8 && xTimeHHMMSS::kWidth == 8, "HH:MM:SS: 8 wide");
+    t.clear();
+    hms.update(t);
+    check(t.row(1) == "    --:--:--", "dashes until set");
+    check(hms.set(1, 2, 3), "set(1, 2, 3)");
+    hms.update(t);
+    check(t.row(1) == "    01:02:03" && hms.seconds() == 3, "01:02:03 at its place");
+    check(!hms.set(1, 2, 60) && !hms.set(1, 60, 0) && !hms.set(24, 0, 0) && hms.seconds() == 3, "out of range refused");
+    check(hms.set(23, 59, 59), "23:59:59 taken");
+    hms.setFromSecondsOfDay(45296);             // 12:34:56
+    hms.update(t);
+    check(t.row(1) == "    12:34:56", "from seconds of the day");
+    check(hms.set(8, 15) && hms.seconds() == 0, "set(h, m) on HH:MM:SS: seconds 0");
+    hms.setSeparator('.');
+    hms.update(t);
+    check(t.row(1) == "    08.15.00", "another separator");
+    hms.setSeparator(0);
+    check(hms.width() == 6, "HHMMSS: 6 wide");
+
+    // On a screen, through the GUI task: a data thread sets the time and
+    // posts a refresh; the screen's render() calls update().
+    struct ClockScreen : public xScreen {
+        xTimeHHMM clock{11, 0};
+        void render(iTextSurface& s) override { s.print("Outside 72"); clock.update(s); }
+    } screen;
+    FakeDisplay display(16, 2);
+    xGui gui(display, screen);
+    gui.start();
+    gui.begin();
+    check(display.surface.row(0) == "Outside 72 --:--", "home screen before the time is known");
+    screen.clock.setFromSecondsOfDay(18 * 3600 + 45 * 60);
+    check(gui.post(xGuiEvent::refresh()), "data thread: refresh posted");
+    gui.runOnce(osWaitForever);
+    check(display.surface.row(0) == "Outside 72 18:45", "and the GUI task drew 18:45");
+}
+
 int main() {
     textSurface();
     stack();
@@ -538,6 +627,7 @@ int main() {
     longPress();
     widgetsHeld();
     task();
+    timeOfDay();               // last: its xGui::start() counts a task
     std::printf("%s (%d failed)\n", g_failures ? "FAILED" : "all passed", g_failures);
     return g_failures ? 1 : 0;
 }

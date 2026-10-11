@@ -9,6 +9,9 @@
  *           then the driver, DHCP, and the services.
  *   ESP-AT: the driver's own start-up (reset pin, AT, AT+GMR), joining
  *           the network, then the echo service.
+ *   ATWINC1500: the driver's own start-up (RESET_N, the SPI, the boot
+ *           handshake, the firmware's version), joining the network,
+ *           then the echo service; why it stopped, if it does.
  *   Both:   a DNS lookup and the time (SNTP), once there is an address.
  */
 
@@ -25,6 +28,7 @@
 #include "W5500.h"
 #include "W5500Probe.h"
 #include "EspAt.h"
+#include "Winc1500.h"
 #include "xEthernet.h"
 #include "xWifi.h"
 
@@ -307,6 +311,110 @@ void wifiStart() {
 }
 #endif
 
+#if BRINGUP_WINC
+typedef WINC1500::winc1500<Stm32HalSpiBlockTransport> Winc;
+Winc *g_winc = nullptr;
+xWifi *g_wincIf = nullptr;
+ServiceStats g_wincStats = {};
+
+// What to look at when the module didn't start.
+void wincWhy(const Winc &winc) {
+	typedef WINC1500::winc_error_t E;
+	const WINC1500::winc_stats_t st = winc.stats();
+	switch (winc.error()) {
+	case E::no_chip:
+		log_printf("[winc] no answer on SPI1 (%lu transfers, %lu retried after an SPI reset).",
+		           static_cast<unsigned long>(st.transfers), static_cast<unsigned long>(st.spiRetries));
+		log_printf("[winc]   3.3 V and GND (the module draws 300 mA peaks); SCK PA5 [A4], MISO PA6 [A5], MOSI PA7 [A6], "
+		           "CS PA4 [A3], RESET_N PA3 [A2]; CHIP_EN and WAKE tied to 3.3 V.");
+		break;
+	case E::wrong_chip:
+		log_printf("[winc] chip ID 0x%06lX is not an ATWINC1500 (0x1002B0 / 0x1003A0 expected): another module on SPI1?",
+		           static_cast<unsigned long>(winc.chipId()));
+		break;
+	case E::boot_timeout:
+		log_printf("[winc] the boot ROM never said it was ready: power? A module with no firmware in its flash?");
+		break;
+	case E::firmware_timeout:
+		log_printf("[winc] the firmware never started: corrupt flash? Re-flash it with Microchip's or Arduino's updater.");
+		break;
+	case E::firmware_too_old:
+		log_printf("[winc] firmware %u.%u.%u is older than 19.5.0: update it (Arduino IDE: WiFi101 / WiFiNINA firmware updater).",
+		           winc.firmware().major, winc.firmware().minor, winc.firmware().patch);
+		break;
+	case E::firmware_too_new:
+		log_printf("[winc] firmware %u.%u.%u needs a newer host driver than 19.5.2.", winc.firmware().major,
+		           winc.firmware().minor, winc.firmware().patch);
+		break;
+	case E::bus:
+		log_printf("[winc] SPI accesses kept failing (%lu retries): wiring, or too fast? Try -DWINC_SPI_PRESCALER=SPI_BAUDRATEPRESCALER_32.",
+		           static_cast<unsigned long>(st.spiRetries));
+		break;
+	default:
+		log_printf("[winc] not started yet (%lu transfers)", static_cast<unsigned long>(st.transfers));
+	}
+}
+
+void wincStart() {
+	static osMutexId_t spiMutex = osMutexNew(nullptr);
+	board_spi_set_prescaler(WINC_SPI_PRESCALER);
+	static WINC1500::winc_param_t param = [] {
+		WINC1500::winc_param_t p;
+		p.hardReset = [](bool asserted) { board_reset_pin(asserted ? 1 : 0); };
+		p.pollMs = 100;			// IRQN is wired: polling is a backstop
+		p.sockets = 2;
+		return p;
+	}();
+	static Winc winc(param, &hspi1, W5500_CS_GPIO_Port, W5500_CS_Pin, spiMutex);
+	xNetInterface::Config cfg;
+	cfg.maxSockets = 2;			// echo and one spare
+	cfg.rxBufBytes = 1400;		// a whole receive from the module
+	static xWifi wifi(winc, cfg);
+	g_winc = &winc;
+
+	NetConfig net;
+	net.dhcp = true;
+	if (!wifi.begin(net)) {
+		log_printf("[winc] begin() failed: FreeRTOS heap too small");
+		return;
+	}
+	g_wincIf = &wifi;	// the EXTI callback may use it from here
+	startNetThread(wifi, "winc");
+	log_printf("[winc] ATWINC1500 on SPI1 at %lu kHz: CS PA4 [A3], IRQN PA1 [A1], RESET_N PA3 [A2]",
+	           static_cast<unsigned long>(board_spi_hz() / 1000));
+
+	uint32_t t0 = osKernelGetTickCount();
+	if (!waitFor("winc", "the module", 10000, [&](uint32_t ms) { return wifi.waitReady(ms); })) {
+		wincWhy(winc);
+		log_printf("[winc] stopped here; the driver keeps trying every second.");
+		return;
+	}
+	const MacAddress mac = winc.mac();
+	log_printf("[winc] module ready in %lu ms: chip 0x%06lX, firmware %u.%u.%u, MAC %02X:%02X:%02X:%02X:%02X:%02X",
+	           static_cast<unsigned long>(osKernelGetTickCount() - t0), static_cast<unsigned long>(winc.chipId()),
+	           winc.firmware().major, winc.firmware().minor, winc.firmware().patch, mac.b[0], mac.b[1], mac.b[2],
+	           mac.b[3], mac.b[4], mac.b[5]);
+	if (HAL_GPIO_ReadPin(W5500_INT_GPIO_Port, W5500_INT_Pin) == GPIO_PIN_RESET && winc.stats().interrupts == 0) {
+		log_printf("[winc] note: IRQN (PA1 [A1]) is low: a message waiting, or not connected (it works by polling, slower).");
+	}
+
+	t0 = osKernelGetTickCount();
+	log_printf("[winc] joining \"%s\"...", WIFI_SSID);
+	if (!wifi.join(WIFI_SSID, WIFI_PASS, 30000)) {
+		log_printf("[winc] join failed (reason %u: 1 no such network, 3 wrong passphrase): SSID/passphrase (config.h, "
+		           "or -DWIFI_SSID/-DWIFI_PASS), 2.4 GHz network, in range?", winc.joinError());
+		return;
+	}
+	if (wifi.waitAddress(5000)) {
+		log_printf("[winc] joined in %lu ms, RSSI %d dBm", static_cast<unsigned long>(osKernelGetTickCount() - t0), winc.rssi());
+		logAddress("winc", wifi.address());
+	}
+	checkDnsAndTime(wifi, "winc");
+	services_start(wifi, "winc", g_wincStats, SERVICE_ECHO);
+	log_printf("[winc] services: echo :7");
+}
+#endif
+
 void statsLine(uint32_t upMs) {
 	uint64_t now = 0;
 #if BRINGUP_ETH
@@ -314,6 +422,9 @@ void statsLine(uint32_t upMs) {
 #endif
 #if BRINGUP_WIFI
 	if (now == 0 && g_wifi) now = g_wifi->unixTimeMs();
+#endif
+#if BRINGUP_WINC
+	if (now == 0 && g_wincIf) now = g_wincIf->unixTimeMs();
 #endif
 	char when[40];
 	log_printf("[stats] up %lu s, %s, heap free %u (lowest %u)", static_cast<unsigned long>(upMs / 1000),
@@ -340,6 +451,18 @@ void statsLine(uint32_t upMs) {
 		           static_cast<unsigned long>(g_wifiStats.connections));
 	}
 #endif
+#if BRINGUP_WINC
+	if (g_winc) {
+		const WINC1500::winc_stats_t s = g_winc->stats();
+		log_printf("[stats] winc: rssi %d, spi %lu xfers (%lu retried), %lu restarts, %lu irqs, msgs %lu in %lu out, "
+		           "%lu buffer waits, rx %lu B, tx %lu B, %lu connections",
+		           g_winc->rssi(), static_cast<unsigned long>(s.transfers), static_cast<unsigned long>(s.spiRetries),
+		           static_cast<unsigned long>(s.failures), static_cast<unsigned long>(s.interrupts),
+		           static_cast<unsigned long>(s.messagesIn), static_cast<unsigned long>(s.messagesOut),
+		           static_cast<unsigned long>(s.allocWaits), static_cast<unsigned long>(s.rxBytes),
+		           static_cast<unsigned long>(s.txBytes), static_cast<unsigned long>(g_wincStats.connections));
+	}
+#endif
 }
 
 void bringupThread(void *) {
@@ -347,13 +470,17 @@ void bringupThread(void *) {
 	log_printf("=== iNetTransport bring-up: NUCLEO-L432KC ===");
 	log_printf("SYSCLK %lu MHz, LSE %s, reset cause: %s", static_cast<unsigned long>(HAL_RCC_GetSysClockFreq() / 1000000),
 	           board_lse_ok() ? "running (MSI trimmed)" : "not running (MSI untrimmed)", board_reset_cause());
-	log_printf("building: Ethernet (W5500) %s, Wi-Fi (ESP-AT) %s", BRINGUP_ETH ? "yes" : "no", BRINGUP_WIFI ? "yes" : "no");
+	log_printf("building: Ethernet (W5500) %s, Wi-Fi (ESP-AT) %s, Wi-Fi (ATWINC1500) %s", BRINGUP_ETH ? "yes" : "no",
+	           BRINGUP_WIFI ? "yes" : "no", BRINGUP_WINC ? "yes" : "no");
 
 #if BRINGUP_ETH
 	ethStart();
 #endif
 #if BRINGUP_WIFI
 	wifiStart();
+#endif
+#if BRINGUP_WINC
+	wincStart();
 #endif
 
 	// Heartbeat on LD3, statistics every STATS_PERIOD_MS.
@@ -375,6 +502,8 @@ void bringupThread(void *) {
 extern "C" void HAL_GPIO_EXTI_Callback(uint16_t pin) {
 #if BRINGUP_ETH
 	if (pin == W5500_INT_Pin && g_eth != nullptr) g_eth->interruptFromIsr();
+#elif BRINGUP_WINC
+	if (pin == W5500_INT_Pin && g_wincIf != nullptr) g_wincIf->interruptFromIsr();	// IRQN: same pin
 #else
 	(void)pin;
 #endif

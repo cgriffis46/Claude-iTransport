@@ -43,7 +43,7 @@ iTransport/itransport/   transports: the seam between "how we talk to a chip"
                          and "what the chip means"
 isensor/                 sensor base classes and one folder per sensor driver
 iNetTransport/           network interfaces (W5500 Ethernet, ESP-AT Wi-Fi,
-                         lwIP or OS sockets, DHCP, DNS, SNTP), MQTT and HTTP
+                         ATWINC1500 Wi-Fi, lwIP or OS sockets, DHCP, DNS, SNTP), MQTT and HTTP
                          clients, a web server that serves files, and
                          storage/ for them (SPI flash + LittleFS, FatFs)
 PLCTransport/            PLC tag database, CIP tag codec, CIP tag TCP server,
@@ -468,15 +468,46 @@ Safety Supervisor ≈195+). Vol. 2 (EtherNet/IP) was not available.
   (general knowledge, Vol. 2, not verified).
 
 ### iNetTransport on the STM32L432KC
-- An L432 board has one network interface, the W5500 or an ESP-AT module,
-  never both. The bring-up firmware's build refuses both. A design that
-  needs both goes on a bigger STM32.
+- An L432 board has one network interface: the W5500, an ESP-AT module or
+  an ATWINC1500, never two. The bring-up firmware's build takes exactly
+  one (`BRINGUP_ETH`, `BRINGUP_WIFI`, `BRINGUP_WINC`). A design that needs
+  more goes on a bigger STM32.
 - The L432 is most likely the node that sends data out (a transmitter:
   MQTT, `xHttpClient`), not the one that receives or serves. Size new
   features for that. `xHttpServer` is for bigger boards (or
   `maxClients = 1` on an L432).
 - RAM: 64 KB. The bring-up firmware with one interface takes about 48.5 KB
-  (34 KB of it the FreeRTOS heap); with both it was 54 KB.
+  (34 KB of it the FreeRTOS heap); with both it was 54 KB. With the
+  ATWINC1500: 47.6 KB RAM, 56 KB flash (built here against ST's
+  stm32l4xx_hal_driver, cmsis_device_l4, CMSIS_5, FreeRTOS-Kernel and
+  CMSIS-FreeRTOS laid out as the STM32CubeL4 package).
+- `winc1500<TTransport>` (`iNetTransport/winc1500`, ATWINC1500 over SPI,
+  an `iWifiDevice`): written here, non-blocking, with Microchip's host
+  driver 19.5.2 (BSD-3, in Arduino's WiFi101) as the protocol reference.
+  Every number in `WincProtocol.h` was printed from Microchip's headers
+  compiled for ARM (`test/ref/winc_numbers.c`): their `uint32` is
+  `unsigned long`, 8 bytes on a 64-bit PC, so never take layouts from a PC
+  build of them. Each access is the command, then its echo, state and data
+  header polled a byte at a time (Microchip's "old SPI" path, which
+  Arduino uses), each transfer one state; 10 tries with an SPI reset
+  between. CRC turned off at start-up. The host says it is 19.5.2;
+  firmware before 19.5.0 is refused. One RECV outstanding per socket;
+  replies copied to a 1400 byte buffer and RX done at once; a reader that
+  falls behind holds that buffer (other replies then wait in the module).
+  One SEND in flight per socket. Listening: a module socket per port,
+  accepted connections numbered by the module; 2 ports. The module
+  doesn't rejoin: the driver does, every 5 s, silently. 11.6 KB code,
+  3.9 KB RAM (L432, -Os). `test/sim/SimWinc1500.h` answers the SPI byte
+  by byte as Microchip's driver expects; `WincRef_test`
+  (`-DWINC_REF_DIR=<WiFi101>`) runs Microchip's driver against it with
+  their socket functions renamed (`-Dclose=winc_close`...), their
+  `nm_bsp.h` copied with 32-bit `uint32`, and their sources without ASan
+  (`hif_send` reads 8 bytes from a 4-byte struct). Things the simulator
+  had wrong that the cross-check or the tests showed: 0xFF filler before a
+  read's F3 header (Microchip takes any 0xFx as the start), a block write
+  answered a byte late, a socket freed before the host's CLOSE, the
+  session checked on SEND (the host makes up an accepted socket's
+  session; the firmware can only echo it).
 
 ### iNetTransport on the STM32F207 (and ESP32)
 - The F207 has its own Ethernet MAC and runs lwIP (CubeMX). The same
@@ -619,9 +650,9 @@ cmake -S iRadio -B build -DSENSOR_FW_HARDWARE=HOST \
 ```
 
 Last known results: isensor 25 tests (its 15 drivers plus nmea_parser_test, plus itransport's
-9), iTransport 9, iNetTransport 25 without the optional source
-trees (27 before the two Pico tests, with LWIP_DIR, MBEDTLS_DIR,
-LITTLEFS_DIR and FATFS_DIR),
+9), iTransport 9, iNetTransport 26 without the optional source
+trees (32 with LWIP_DIR, MBEDTLS_DIR, LITTLEFS_DIR, FATFS_DIR and
+WINC_REF_DIR),
 PLCTransport 3 (with MBEDTLS_DIR), safeTransport 10
 (dual_channel_link_test and itransport's 9),
 iDisplay 12 (ssd1306_test,
@@ -791,6 +822,10 @@ STM32L432KC (L4).
     signed adverts, flood sending with MeshCore's budget and
     listen-before-talk; SHA-256/HMAC and AES decryption in
     `iRadio/crypto`, Ed25519 from vendored Monocypher.
+31. An ATWINC1500 Wi-Fi driver (`iNetTransport/winc1500`), written here
+    against Microchip's host driver as the reference and checked by
+    running that driver against the same simulated module; the L432
+    bring-up firmware builds with it (`-DBRINGUP_WINC=ON`).
 
 ## Open items
 
@@ -803,6 +838,15 @@ STM32L432KC (L4).
   granularity (no QSPI or memory mapping). FatFs's commit isn't atomic
   (it deletes, then renames). A constantly-read file can make a commit
   wait up to `busyWaitMs`.
+- ATWINC1500: not run on a module. The simulator follows Microchip's
+  driver, not the module (timing, dummy bytes and the firmware's
+  behaviour are guesses where the driver doesn't pin them down). Arduino
+  splits block transfers into 248 byte pieces; ours are up to 1488 bytes
+  in one (the packet size is set to 8 KB, as Microchip's driver does, but
+  that size of transfer is untested on a module). No TLS on the module,
+  UDP, power save, AP/provisioning, scanning, WPS, 802.1X/WEP, SNTP server
+  choice or OTA. Firmware 19.6.1/19.7 differences beyond 19.5.2's driver
+  are unknown.
 - `SocketNetDevice` has not run on an F207 or an ESP32: compiled for
   Cortex-M3 against lwIP 2.2.1 with CubeMX-like options, and run over lwIP
   on a PC. No Xtensa toolchain was used for the ESP32.

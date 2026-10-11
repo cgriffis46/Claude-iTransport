@@ -4,14 +4,16 @@
  *
  * NUCLEO-L432KC (Arduino Nano pin names in brackets):
  *
- *   W5500 module          ESP-AT module (ESP-01, ESP32 DevKit, ...)
- *   SCK   PA5  [A4]       TX  -> PA10 [D0]  USART1_RX
- *   MISO  PA6  [A5]       RX  <- PA9  [D1]  USART1_TX
- *   MOSI  PA7  [A6]       EN     PA8  [D9]
- *   CS    PA4  [A3]
- *   INT   PA1  [A1]       Log: USART2 on the ST-LINK virtual COM port
- *   RSTn  PA3  [A2]            (PA2 TX, PA15 RX), 115200 8N1
- *                         LED: LD3, PB3 [D13]
+ *   W5500 module          ATWINC1500 module      ESP-AT module (ESP-01, ESP32 DevKit, ...)
+ *   SCK   PA5  [A4]       SCK      PA5  [A4]     TX  -> PA10 [D0]  USART1_RX
+ *   MISO  PA6  [A5]       MISO     PA6  [A5]     RX  <- PA9  [D1]  USART1_TX
+ *   MOSI  PA7  [A6]       MOSI     PA7  [A6]     EN     PA8  [D9]
+ *   CS    PA4  [A3]       CS       PA4  [A3]
+ *   INT   PA1  [A1]       IRQN     PA1  [A1]     Log: USART2 on the ST-LINK virtual COM port
+ *   RSTn  PA3  [A2]       RESET_N  PA3  [A2]          (PA2 TX, PA15 RX), 115200 8N1
+ *                         CHIP_EN, WAKE: 3.3 V   LED: LD3, PB3 [D13]
+ *
+ *   One of the three per build (an L432 board has one network interface).
  */
 #ifndef MAIN_H
 #define MAIN_H

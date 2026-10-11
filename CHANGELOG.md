@@ -7,6 +7,38 @@ pull request, newest first.
 
 ## Unreleased
 
+### 2026-10-11
+
+#### Added
+- A Wi-Fi driver for Microchip's ATWINC1500 over SPI, in
+  `iNetTransport/winc1500`: `winc1500<TTransport>`, an `iWifiDevice` for
+  `xWifi`, non-blocking and written here. Microchip's host driver 19.5.2
+  (BSD-3, in Arduino's WiFi101) is the protocol reference.
+  - Start-up: reset (pin or register), SPI CRC off, the boot handshake,
+    and the firmware's version and MAC; 19.5.0 or later is required.
+  - Messages through the module's HIF, with RX-done flow control.
+  - WPA2 and open networks, DHCP or a static address, RSSI, and rejoining
+    by itself after the network goes away.
+  - TCP clients and listening sockets (a module socket per port), and the
+    module's DNS and time.
+  - `WincProtocol.h` holds the numbers, printed from Microchip's headers
+    for the ARM ABI (`test/ref/winc_numbers.c`).
+  - Tests:
+    - `test/sim/SimWinc1500.h`: a simulated module, answering the SPI
+      byte by byte.
+    - `Winc1500_test`: the driver against the simulator.
+    - `WincRef_test` (with `WINC_REF_DIR`): Microchip's own driver run
+      against the same simulator, and `WincProtocol.h` static_asserted
+      against its headers.
+    - `xNet_test`: `xWifi` over the driver, on real threads.
+- The L432 bring-up firmware builds with the ATWINC1500
+  (`-DBRINGUP_WINC=ON`) on SPI1 in the W5500's place. The log says why
+  it stopped if it does.
+
+#### Changed
+- The bring-up firmware's build takes exactly one of `BRINGUP_ETH`,
+  `BRINGUP_WIFI` and `BRINGUP_WINC`. `board_reset_pin()` drives PA3.
+
 ### 2026-10-10
 
 #### Added

@@ -216,6 +216,10 @@ void board_w5500_reset(void) {
 	HAL_Delay(60);
 }
 
+void board_reset_pin(int asserted) {
+	HAL_GPIO_WritePin(W5500_RST_GPIO_Port, W5500_RST_Pin, asserted ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}
+
 void board_esp_enable(int on) {
 	HAL_GPIO_WritePin(ESP_EN_GPIO_Port, ESP_EN_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }

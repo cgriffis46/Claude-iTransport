@@ -1,6 +1,7 @@
 # Bring-up firmware for the iNetTransport drivers on a NUCLEO-L432KC: W5500
-# Ethernet on SPI1 or an ESP-AT Wi-Fi module on USART1, one per build (an
-# L432 board has one network interface; both need a bigger STM32). Standalone:
+# Ethernet on SPI1, an ATWINC1500 Wi-Fi module on SPI1, or an ESP-AT Wi-Fi
+# module on USART1, one per build (an L432 board has one network interface;
+# more need a bigger STM32). Standalone:
 # it needs the GNU Arm toolchain and ST's STM32CubeL4 firmware package
 # (which CubeIDE/CubeMX download to ~/STM32Cube/Repository), no CubeMX
 # project. See BRINGUP.md.
@@ -13,6 +14,8 @@
 #   -DBRINGUP_ETH=ON|OFF        W5500 (default ON)
 #   -DBRINGUP_WIFI=ON|OFF       ESP-AT instead (default OFF; with BRINGUP_ETH=OFF), with
 #   -DWIFI_SSID=... -DWIFI_PASS=... -DESP_BAUD=115200
+#   -DBRINGUP_WINC=ON|OFF       ATWINC1500 instead (default OFF; with BRINGUP_ETH=OFF),
+#                               with -DWIFI_SSID=... -DWIFI_PASS=...
 #   -DETH_DHCP=ON|OFF           static address otherwise: edit Core/Inc/config.h
 #
 # The package's folders can also be given one by one (STM32_HAL_DIR,
@@ -41,6 +44,7 @@ endif()
 
 option(BRINGUP_ETH  "W5500 Ethernet on SPI1" ON)
 option(BRINGUP_WIFI "ESP-AT Wi-Fi on USART1" OFF)
+option(BRINGUP_WINC "ATWINC1500 Wi-Fi on SPI1" OFF)
 option(ETH_DHCP     "Ethernet address by DHCP" ON)
 set(WIFI_SSID "" CACHE STRING "Wi-Fi network to join")
 set(WIFI_PASS "" CACHE STRING "Its passphrase")
@@ -49,13 +53,20 @@ set(ESP_BAUD 115200 CACHE STRING "ESP-AT module's UART baud rate")
 # One interface per board: the L432 doesn't have the RAM for both and an
 # application besides (both: 54 KB of its 64 KB taken before any
 # application code; one: about 48.5 KB, heap included).
-if(BRINGUP_ETH AND BRINGUP_WIFI)
-    message(FATAL_ERROR "BRINGUP_ETH and BRINGUP_WIFI are both ON. An L432 board has one network "
-        "interface: for Wi-Fi, use -DBRINGUP_ETH=OFF -DBRINGUP_WIFI=ON. A board with both "
-        "needs a bigger STM32.")
+set(_ifaces 0)
+foreach(_o BRINGUP_ETH BRINGUP_WIFI BRINGUP_WINC)
+    if(${_o})
+        math(EXPR _ifaces "${_ifaces} + 1")
+    endif()
+endforeach()
+if(_ifaces GREATER 1)
+    message(FATAL_ERROR "More than one of BRINGUP_ETH, BRINGUP_WIFI and BRINGUP_WINC is ON. An L432 board has "
+        "one network interface: for Wi-Fi, use -DBRINGUP_ETH=OFF with -DBRINGUP_WIFI=ON (ESP-AT) or "
+        "-DBRINGUP_WINC=ON (ATWINC1500). A board with more needs a bigger STM32.")
 endif()
-if(NOT BRINGUP_ETH AND NOT BRINGUP_WIFI)
-    message(FATAL_ERROR "Choose a network interface: -DBRINGUP_ETH=ON (W5500) or -DBRINGUP_WIFI=ON (ESP-AT).")
+if(_ifaces EQUAL 0)
+    message(FATAL_ERROR "Choose a network interface: -DBRINGUP_ETH=ON (W5500), -DBRINGUP_WIFI=ON (ESP-AT) "
+        "or -DBRINGUP_WINC=ON (ATWINC1500).")
 endif()
 
 set(REPO ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
@@ -95,11 +106,11 @@ set(INCLUDES
     ${FREERTOS_RTOS2_DIR}
     ${IT}/inc ${IT}/hw/stm32/inc ${IT}/hw/freertos/inc
     ${INET}/inc ${INET}/hw/freertos/inc ${INET}/dhcp/inc ${INET}/dns/inc ${INET}/sntp/inc
-    ${INET}/w5500/inc ${INET}/espat/inc
+    ${INET}/w5500/inc ${INET}/espat/inc ${INET}/winc1500/inc
 )
 
 set(DEFS STM32L432xx USE_HAL_DRIVER
-    BRINGUP_ETH=$<BOOL:${BRINGUP_ETH}> BRINGUP_WIFI=$<BOOL:${BRINGUP_WIFI}>
+    BRINGUP_ETH=$<BOOL:${BRINGUP_ETH}> BRINGUP_WIFI=$<BOOL:${BRINGUP_WIFI}> BRINGUP_WINC=$<BOOL:${BRINGUP_WINC}>
     ETH_DHCP=$<BOOL:${ETH_DHCP}> ESP_BAUD=${ESP_BAUD})
 if(NOT WIFI_SSID STREQUAL "")
     list(APPEND DEFS "WIFI_SSID=\"${WIFI_SSID}\"" "WIFI_PASS=\"${WIFI_PASS}\"")

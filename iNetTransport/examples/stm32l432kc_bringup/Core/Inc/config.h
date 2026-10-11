@@ -10,6 +10,16 @@
 #define BRINGUP_ETH 1
 #endif
 
+/* ATWINC1500 Wi-Fi on SPI1, in the W5500's place. */
+#ifndef BRINGUP_WINC
+#define BRINGUP_WINC 0
+#endif
+/* Its SPI clock: 80 MHz / 8 = 10 MHz (the module takes up to 48 MHz;
+ * Arduino's WiFi101 runs it at 12 MHz). */
+#ifndef WINC_SPI_PRESCALER
+#define WINC_SPI_PRESCALER SPI_BAUDRATEPRESCALER_8
+#endif
+
 /* ESP-AT Wi-Fi on USART1. */
 #ifndef BRINGUP_WIFI
 #define BRINGUP_WIFI 0
